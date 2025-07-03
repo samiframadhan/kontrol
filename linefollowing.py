@@ -51,12 +51,11 @@ class ArucoDetector:
         return img, corners, ids
 
 class LaneFollower:
-    MIN_AREA = 700
-    MIN_AREA_TRACK = 3000
+    MIN_AREA = 500
+    MIN_AREA_TRACK = 2000
 
-    def __init__(self, calibration: CameraCalibration, aruco_detector: ArucoDetector):
-        self.calibration = calibration
-        self.aruco_detector = aruco_detector
+    def __init__(self):
+        pass
 
     @staticmethod
     def grayscale(img):
@@ -156,7 +155,7 @@ class LaneFollower:
         cv2.polylines(overlay_img_src, [src_int], isClosed=True, color=(0, 255, 0), thickness=2)
         cv2.imshow("Source Points Overlay", overlay_img_src)
         cv2.waitKey(1)
-        dst_width, dst_height = 1280, 720
+        dst_width, dst_height = 640, 480
         dst = np.float32([
             [0, dst_height], 
             [0, 0],
@@ -166,8 +165,8 @@ class LaneFollower:
         M = cv2.getPerspectiveTransform(dst, src)
         img_warped = cv2.warpPerspective(img, M, (img.shape[1], img.shape[0]), flags=cv2.INTER_LINEAR)
         hsv_img = cv2.cvtColor(img_warped, cv2.COLOR_BGR2HSV)
-        lower_hsv = (70, 0, 125)
-        upper_hsv = (100, 50, 255)
+        lower_hsv = (0, 140, 100)
+        upper_hsv = (40, 255, 160)
         mask_yellow = cv2.inRange(hsv_img, lower_hsv, upper_hsv)
         masked_img = np.copy(img_warped)
         masked_img[mask_yellow == 0] = [0,0,0]
@@ -266,14 +265,11 @@ class LaneFollower:
         overlay_img = img_warped
         for line_img in line_imgs:
             overlay_img = self.weighted_img(line_img, overlay_img, 0.9, 0.7, 0.0)
-        detected, corners, ids = self.aruco_detector.detect(img)
-        return (overlay_img, masks[0], detected)
+        return (overlay_img, masks[0])
 
 def main():
-    calibration = CameraCalibration('./picam_calibration_720p3.yaml')
-    aruco_detector = ArucoDetector(calibration)
-    lane_follower = LaneFollower(calibration, aruco_detector)
-    cap = cv2.VideoCapture('./track_14.h264')
+    lane_follower = LaneFollower()
+    cap = cv2.VideoCapture('./output.avi')
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('A', 'V', '0', '1'))
     output = 'acc_7.mp4'
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -282,14 +278,13 @@ def main():
         ret, frame = cap.read()
         if not ret:
             break
-        result, mask, detected_aruco = lane_follower.lane_finding_pipeline(frame)
+        result, mask = lane_follower.lane_finding_pipeline(frame)
         if result is not None:
-            cv2.imshow('detected_aruco', detected_aruco)
             cv2.imshow('frame', result)
             k = cv2.waitKey(1) & 0xFF
             frame_resized = cv2.resize(frame, (640, 480))
             result_resized = cv2.resize(result, (640, 480))
-            stacked = np.hstack((frame_resized, result_resized))
+            stacked = np.hstack((frame_resized, result))
             result_writer.write(stacked)
             if k == ord('s'):
                 cv2.imwrite('image.png', frame_resized)
@@ -298,7 +293,6 @@ def main():
                 break
             elif k == ord('p'):
                 while True:
-                    cv2.imshow('detected_aruco', detected_aruco)
                     cv2.imshow('frame', result)
                     k = cv2.waitKey(1) & 0xFF
                     if k == ord('q'):
