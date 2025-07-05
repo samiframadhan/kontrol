@@ -88,3 +88,13 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# videos
+*.avi
+*.mp4
+*.mkv
+*.mov
+
+# Logs
+*.log
+*.out
