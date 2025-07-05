@@ -288,14 +288,13 @@ def main():
         ret, frame = cap.read()
         if not ret:
             break
-        result, mask, detected_aruco = lane_follower.lane_finding_pipeline(frame)
+        result, mask = lane_follower.lane_finding_pipeline(frame)
         if result is not None:
-            cv2.imshow('detected_aruco', detected_aruco)
             cv2.imshow('frame', result)
             k = cv2.waitKey(1) & 0xFF
             frame_resized = cv2.resize(frame, (640, 480))
             result_resized = cv2.resize(result, (640, 480))
-            stacked = np.hstack((frame_resized, result_resized))
+            stacked = np.hstack((frame_resized, result))
             result_writer.write(stacked)
             if k == ord('s'):
                 cv2.imwrite('image.png', frame_resized)
@@ -304,7 +303,6 @@ def main():
                 break
             elif k == ord('p'):
                 while True:
-                    cv2.imshow('detected_aruco', detected_aruco)
                     cv2.imshow('frame', result)
                     k = cv2.waitKey(1) & 0xFF
                     if k == ord('q'):
