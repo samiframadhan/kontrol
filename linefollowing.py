@@ -51,12 +51,15 @@ class ArucoDetector:
         return img, corners, ids
 
 class LaneFollower:
-    MIN_AREA = 700
-    MIN_AREA_TRACK = 3000
+    MIN_AREA = 100
+    MIN_AREA_TRACK = 300
 
-    def __init__(self, calibration: CameraCalibration, aruco_detector: ArucoDetector):
+    def __init__(self, calibration: CameraCalibration = None, aruco_detector: ArucoDetector = None):
         self.calibration = calibration
         self.aruco_detector = aruco_detector
+        self.detect_aruco = True
+        if calibration == None:
+            self.detect_aruco = False
 
     @staticmethod
     def grayscale(img):
@@ -89,11 +92,7 @@ class LaneFollower:
                     if (not mark) or (mark['y'] > int(M["m01"]/M["m00"])):
                         mark['y'] = int(M["m01"]/M["m00"])
                         mark['x'] = int(M["m10"]/M["m00"])
-        if mark and line:
-            mark_side = "right" if mark['x'] > line['x'] else "left"
-        else:
-            mark_side = None
-        return (line, mark_side, contours)
+        return (line, contours)
 
     @staticmethod
     def draw_contours(mask, contours):
@@ -141,7 +140,7 @@ class LaneFollower:
         if img is None:
             return None, None, None
         H, W = img.shape[:2]
-        warp = 0.4
+        warp = 0.35
         mirror_point = 1 - warp
         src = np.float32([
             [W * warp, H],
@@ -156,7 +155,7 @@ class LaneFollower:
         cv2.polylines(overlay_img_src, [src_int], isClosed=True, color=(0, 255, 0), thickness=2)
         cv2.imshow("Source Points Overlay", overlay_img_src)
         cv2.waitKey(1)
-        dst_width, dst_height = 1280, 720
+        dst_width, dst_height = 640, 480
         dst = np.float32([
             [0, dst_height], 
             [0, 0],
@@ -166,8 +165,8 @@ class LaneFollower:
         M = cv2.getPerspectiveTransform(dst, src)
         img_warped = cv2.warpPerspective(img, M, (img.shape[1], img.shape[0]), flags=cv2.INTER_LINEAR)
         hsv_img = cv2.cvtColor(img_warped, cv2.COLOR_BGR2HSV)
-        lower_hsv = (70, 0, 125)
-        upper_hsv = (100, 50, 255)
+        lower_hsv = (0, 120, 140)
+        upper_hsv = (40, 255, 255)
         mask_yellow = cv2.inRange(hsv_img, lower_hsv, upper_hsv)
         masked_img = np.copy(img_warped)
         masked_img[mask_yellow == 0] = [0,0,0]
@@ -178,7 +177,7 @@ class LaneFollower:
         high_thresh = 90
         edges_img = self.canny(blurred_gray_img, low_threshold=low_thresh, high_threshold=high_thresh)
         H, W = img_warped.shape[:2]
-        region_height = H // 5
+        region_height = H // 4
         vertices_regions = [
             np.array([[
                 (0, H - (i + 1) * region_height),
@@ -197,12 +196,13 @@ class LaneFollower:
         line_imgs = [self.hough_lines(edge_mask, rho, theta, threshold, min_line_len, max_line_gap) for edge_mask in edge_masks]
         contours_data = [self.get_contour_data(mask) for mask in masks]
         centers = []
-        for i, (line_img, (line, mark_side, contours)) in enumerate(zip(line_imgs, contours_data)):
+        for i, (line_img, (line, contours)) in enumerate(zip(line_imgs, contours_data)):
             if line:
                 center = (line['x'], line['y'])
                 centers.append(center)
                 cv2.circle(line_img, center, 5, (0, 255, 0), 7)
         centers_sorted = sorted(centers, key=lambda c: -c[1])
+        print(f"Sorted centers: {centers_sorted}")
         for i in range(len(centers_sorted) - 1):
             c1 = centers_sorted[i]
             c2 = centers_sorted[i + 1]
@@ -214,7 +214,8 @@ class LaneFollower:
             yaw_stan = yaw_stan + (math.pi / 4)
             yaw_track_heading = ((yaw_deg + 180) % 360) - 90
             if i in (0, 1):
-                cv2.putText(line_imgs[i], f"{yaw_stan:.1f}rad", (c1[0]+8, c1[1]-8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+                cv2.putText(line_imgs[i], f"{yaw_track_heading:.2f}deg", (c1[0]+8, c1[1]-8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+                # cv2.putText(line_imgs[i], f"{yaw_stan:.1f}rad", (c1[0]+8, c1[1]-8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
             if dx != 0:
                 m = dy / dx
                 b = c1[1] - m * c1[0]
@@ -233,9 +234,7 @@ class LaneFollower:
                 intersection = (int(x_int), int(y_int))
                 cv2.line(line_imgs[i], bottom_center, intersection, (255, 0, 255), 1)
                 dist = math.sqrt((intersection[0] - bottom_center[0]) ** 2 + (intersection[1] - bottom_center[1]) ** 2)
-                dist = dist / 160
-                dist = dist * 7
-                dist = dist / 100
+                dist = 0.725047081 * dist
                 if i == 0:
                     if m != 0:
                         x_at_bottom = int((H - b) / m)
@@ -254,7 +253,7 @@ class LaneFollower:
                     y1 = int(y0 - r * math.sin(angle))
                     cv2.arrowedLine(line_imgs[i], (x0, y0), (x1, y1), (0, 0, 255), 3, tipLength=0.2)
                     cv2.putText(line_imgs[i], f"ctrl:{control:.1f}rad", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
-                    cv2.putText(line_imgs[i], f"dist: {dist:.2f} angle: {yaw_stan:.1f} b:{b:.2f}", (10, H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                    cv2.putText(line_imgs[i], f"dist: {dist:.2f} angle: {yaw_stan:.1f}rad b:{b:.2f}", (10, H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             else:
                 cv2.line(line_imgs[i], (c1[0], 0), (c1[0], H), (0, 255, 0), 1)
                 bottom_center = (W // 2, H)
@@ -266,16 +265,18 @@ class LaneFollower:
         overlay_img = img_warped
         for line_img in line_imgs:
             overlay_img = self.weighted_img(line_img, overlay_img, 0.9, 0.7, 0.0)
-        detected, corners, ids = self.aruco_detector.detect(img)
-        return (overlay_img, masks[0], detected)
+        if self.detect_aruco:
+            detected, corners, ids = self.aruco_detector.detect(img)
+        return (overlay_img, masks[0], img)
 
 def main():
-    calibration = CameraCalibration('./picam_calibration_720p3.yaml')
-    aruco_detector = ArucoDetector(calibration)
-    lane_follower = LaneFollower(calibration, aruco_detector)
-    cap = cv2.VideoCapture('./track_14.h264')
+    # calibration = CameraCalibration('./picam_calibration_720p3.yaml')
+    # aruco_detector = ArucoDetector(calibration)
+    # lane_follower = LaneFollower(calibration, aruco_detector)
+    lane_follower = LaneFollower()
+    cap = cv2.VideoCapture('./40derajat77cmcrosstrack_run.avi')
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('A', 'V', '0', '1'))
-    output = 'acc_7.mp4'
+    output = 'acc_10.mp4'
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     result_writer = cv2.VideoWriter(output, fourcc, 30.0, (640 * 2, 480))
     while cap.isOpened():
