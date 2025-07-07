@@ -1,341 +1,381 @@
 import cv2
 import cv2.aruco as aruco
 import math
-import matplotlib.pyplot as plt
 import numpy as np
 import os
+import zmq
 import pyrealsense2 as rs
+import json
+import threading
+from dataclasses import dataclass
+from abc import ABC, abstractmethod
 
-class CameraCalibration:
-    def __init__(self, yaml_path):
-        self.camera_matrix, self.dist_coeffs = self.load_calibration(yaml_path)
+# -------------------------------------------------------------------
+# --- 1. CONFIGURATION
+# -------------------------------------------------------------------
+
+@dataclass
+class Config:
+    """Holds all tunable parameters and constants."""
+    # ZMQ
+    ZMQ_SUB_URL: str = "tcp://localhost:5556"
+    ZMQ_TOPIC: str = "teleop"
+
+    # Camera and Video
+    FRAME_WIDTH: int = 640
+    FRAME_HEIGHT: int = 480
+    FRAME_FPS: int = 30
+    VIDEO_OUTPUT_FILE: str = 'acc_refactored.mp4'
+    OPENCV_CAMERA_SOURCE: any = "40derajat77cmcrosstrack_run.avi"  # 0 for webcam, or "path/to/video.mp4"
+
+    # Lane Detection
+    LANE_HSV_LOWER: np.ndarray = np.array([0, 120, 120])
+    LANE_HSV_UPPER: np.ndarray = np.array([40, 255, 255])
+    PERSPECTIVE_WARP: float = 0.35
+    MIN_CONTOUR_AREA: int = 100
+    PIXELS_TO_METERS: float = 0.00725  # Conversion factor for distance
+
+    # Stanley Controller
+    STANLEY_GAIN: float = 1.0  # Proportional gain for cross-track error
+    SPEED_EPSILON: float = 1e-6 # Small value to prevent division by zero
+
+# -------------------------------------------------------------------
+# --- 2. HARDWARE ABSTRACTION & UTILITIES
+# -------------------------------------------------------------------
+
+class Camera(ABC):
+    """Abstract Base Class for camera sources."""
+    @abstractmethod
+    def start(self):
+        """Initializes and starts the camera stream."""
+        pass
+
+    @abstractmethod
+    def get_frame(self):
+        """Returns a single frame (numpy array) from the camera."""
+        pass
+
+    @abstractmethod
+    def stop(self):
+        """Stops the camera stream and releases resources."""
+        pass
+
+class RealSenseCamera(Camera):
+    """Camera implementation for Intel RealSense."""
+    def __init__(self, config: Config):
+        self.config = config
+        self.pipeline = rs.pipeline()
+        self.rs_config = rs.config()
+        self.rs_config.enable_stream(
+            rs.stream.color,
+            config.FRAME_WIDTH,
+            config.FRAME_HEIGHT,
+            rs.format.bgr8,
+            config.FRAME_FPS
+        )
+
+    def start(self):
+        print("Starting RealSense camera...")
+        self.pipeline.start(self.rs_config)
+
+    def get_frame(self):
+        frames = self.pipeline.wait_for_frames()
+        color_frame = frames.get_color_frame()
+        if not color_frame:
+            return None
+        return np.asanyarray(color_frame.get_data())
+
+    def stop(self):
+        print("Stopping RealSense camera.")
+        self.pipeline.stop()
+
+class OpenCVCamera(Camera):
+    """Camera implementation for any source supported by OpenCV."""
+    def __init__(self, config: Config, source):
+        self.config = config
+        self.source = source
+        self.cap = None
+
+    def start(self):
+        print(f"Starting OpenCV camera with source: {self.source}...")
+        self.cap = cv2.VideoCapture(self.source)
+        if not self.cap.isOpened():
+            raise IOError(f"Cannot open OpenCV source: {self.source}")
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.FRAME_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.FRAME_HEIGHT)
+        self.cap.set(cv2.CAP_PROP_FPS, self.config.FRAME_FPS)
+
+    def get_frame(self):
+        ret, frame = self.cap.read()
+        if not ret:
+            return None
+        return frame
+
+    def stop(self):
+        if self.cap:
+            print("Stopping OpenCV camera.")
+            self.cap.release()
+
+class ZmqSubscriber:
+    """Manages ZMQ subscription in a separate thread for speed updates."""
+    def __init__(self, config: Config):
+        self.config = config
+        self.speed = 0.0
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        context = zmq.Context()
+        socket = context.socket(zmq.SUB)
+        socket.connect(self.config.ZMQ_SUB_URL)
+        socket.setsockopt_string(zmq.SUBSCRIBE, self.config.ZMQ_TOPIC)
+        poller = zmq.Poller()
+        poller.register(socket, zmq.POLLIN)
+        print("ZMQ Subscriber thread started.")
+        while not self._stop_event.is_set():
+            socks = dict(poller.poll(timeout=100))
+            if socket in socks and socks[socket] == zmq.POLLIN:
+                _, data_json = socket.recv_multipart()
+                data = json.loads(data_json)
+                with self._lock:
+                    self.speed = data.get('speed', 0.0)
+        socket.close()
+        context.term()
+        print("ZMQ Subscriber thread stopped.")
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        self.thread.join()
+
+    def get_speed(self):
+        with self._lock:
+            return self.speed
+
+# (The StanleyController, LaneDetector, and Visualizer classes remain the same as the previous response)
+# ...
+class StanleyController:
+    """Calculates steering angle using the Stanley control method."""
+    @staticmethod
+    def calculate_steering(cross_track_error, heading_error, speed, k, epsilon):
+        cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
+        return heading_error + cross_track_term
+
+# ... (Config, Camera, ZmqSubscriber, and StanleyController classes are unchanged) ...
+
+# -------------------------------------------------------------------
+# --- 3. LANE DETECTION LOGIC (MODIFIED)
+# -------------------------------------------------------------------
+
+class LaneDetector:
+    """Handles the full CV pipeline to detect lane and calculate errors."""
+    def __init__(self, config: Config):
+        self.config = config
+
+    def _get_perspective_transform(self, img_shape):
+        H, W = img_shape
+        warp = self.config.PERSPECTIVE_WARP
+        mirror_point = 1 - warp
+        src = np.float32([[W * warp, H], [0, 0], [W, 0], [W * mirror_point, H]])
+        dst = np.float32([[0, H], [0, 0], [W, 0], [W, H]])
+        return cv2.getPerspectiveTransform(dst, src)
 
     @staticmethod
-    def load_calibration(yaml_path):
-        if not os.path.isfile(yaml_path):
-            raise FileNotFoundError(f"Calibration file '{yaml_path}' does not exist.")
-        fs = cv2.FileStorage(yaml_path, cv2.FILE_STORAGE_READ)
-        if not fs.isOpened():
-            fs.release()
-            raise IOError(f"Failed to open calibration file '{yaml_path}'.")
-        camera_matrix = fs.getNode("camera_matrix").mat()
-        dist_coeffs = fs.getNode("distortion_coefficients").mat()
-        fs.release()
-        return camera_matrix, dist_coeffs
-
-class ArucoDetector:
-    def __init__(self, calibration: CameraCalibration):
-        self.camera_matrix = calibration.camera_matrix
-        self.dist_coeffs = calibration.dist_coeffs
-        self.ARUCO_PARAMETERS = aruco.DetectorParameters()
-        self.ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_5X5_50)
-        self.axis = np.float32([[-.5,-.5,0], [-.5,.5,0], [.5,.5,0], [.5,-.5,0],
-                                [-.5,-.5,1],[-.5,.5,1],[.5,.5,1],[.5,-.5,1] ])
-
-    def detect(self, img):
-        board = aruco.GridBoard(
-            size=(1, 1),
-            markerLength=0.1,
-            markerSeparation=0.01,
-            dictionary=self.ARUCO_DICT)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        corners, ids, rejectedImgPoints = aruco.detectMarkers(gray, self.ARUCO_DICT, parameters=self.ARUCO_PARAMETERS)
-        rotation_vectors, translation_vectors = [], []
-        if ids is not None:
-            corners, ids, rejectedImgPoints, recoveredIds = aruco.refineDetectedMarkers(
-                gray, board, corners, ids, rejectedImgPoints)
-            for i in range(len(ids)):
-                rvec, tvec, _ = aruco.estimatePoseSingleMarkers(corners[i], 0.1, self.camera_matrix, self.dist_coeffs)
-                rotation_vectors.append(rvec)
-                translation_vectors.append(tvec)
-            img = aruco.drawDetectedMarkers(img, corners, ids)
-        return img, corners, ids
-
-class LaneFollower:
-    MIN_AREA = 100
-    MIN_AREA_TRACK = 300
-
-    def __init__(self, calibration: CameraCalibration =None, aruco_detector: ArucoDetector =None):
-        self.calibration = calibration
-        self.aruco_detector = aruco_detector
-        self.detect_aruco = True
-        if self.calibration is None and self.aruco_detector is None:
-            self.detect_aruco = False
-
-    @staticmethod
-    def grayscale(img):
-        return cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-
-    @staticmethod
-    def canny(img, low_threshold, high_threshold):
-        return cv2.Canny(img, low_threshold, high_threshold)
-
-    @staticmethod
-    def gaussian_blur(img, kernel_size):
-        return cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
-
-    @staticmethod
-    def crop_size(height, width):
-        return (1*height//3, height, width//4, 3*width//4)
-
-    @staticmethod
-    def get_contour_data(mask):
+    def _find_lane_contours(mask):
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        mark = {}
-        line = {}
+        centers = []
         for contour in contours:
             M = cv2.moments(contour)
-            if M['m00'] > LaneFollower.MIN_AREA:
-                if (M['m00'] > LaneFollower.MIN_AREA_TRACK):
-                    line['x'] = int(M["m10"]/M["m00"])
-                    line['y'] = int(M["m01"]/M["m00"])
-                else:
-                    if (not mark) or (mark['y'] > int(M["m01"]/M["m00"])):
-                        mark['y'] = int(M["m01"]/M["m00"])
-                        mark['x'] = int(M["m10"]/M["m00"])
-        if mark and line:
-            mark_side = "right" if mark['x'] > line['x'] else "left"
+            if M['m00'] > Config.MIN_CONTOUR_AREA:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                centers.append({'x': cx, 'y': cy, 'area': M['m00']})
+        return contours, centers
+
+    def _calculate_perpendicular_error(self, m, b, H, W):
+        """Calculates the precise perpendicular distance from the vehicle to the lane line."""
+        bottom_center = (W // 2, H)
+        
+        # Handle the case of a horizontal line to avoid division by zero for perp_m
+        if abs(m) < 1e-6:
+            x_int = bottom_center[0]
+            y_int = b
         else:
-            mark_side = None
-        return (line, mark_side, contours)
+            # Calculate the slope and intercept of the perpendicular line
+            perp_m = -1 / m
+            perp_b = bottom_center[1] - perp_m * bottom_center[0]
+            
+            # Calculate the intersection point of the two lines
+            x_int = (perp_b - b) / (m - perp_m)
+            y_int = m * x_int + b
+            
+        intersection_point = (int(x_int), int(y_int))
+        
+        # Calculate the magnitude of the error (distance)
+        error_pixels = math.hypot(x_int - bottom_center[0], y_int - bottom_center[1])
+        
+        # Determine the sign of the error based on the lane's position
+        x_at_bottom = (H - b) / m
+        if x_at_bottom < W // 2:
+            error_pixels = -error_pixels
+            
+        return error_pixels, intersection_point
 
-    @staticmethod
-    def draw_contours(mask, contours):
-        for contour in contours:
-            cv2.drawContours(mask, contour, -1, (255,0,255), 1)
-
-    @staticmethod
-    def region_of_interest(img, vertices):
-        mask = np.zeros_like(img)
-        if len(img.shape) > 2:
-            channel_count = img.shape[2]
-            ignore_mask_color = (255,) * channel_count
-        else:
-            ignore_mask_color = 255
-        cv2.fillPoly(mask, vertices, ignore_mask_color)
-        masked_image = cv2.bitwise_and(img, mask)
-        return masked_image
-
-    @staticmethod
-    def draw_lines(img, lines, color=[255, 0, 0], thickness=10):
-        if lines is not None:
-            for line in lines:
-                for x1, y1, x2, y2 in line:
-                    cv2.line(img, (x1, y1), (x2, y2), color, thickness)
-
-    @staticmethod
-    def hough_lines(img, rho, theta, threshold, min_line_len, max_line_gap):
-        lines = cv2.HoughLinesP(img, rho, theta, threshold, np.array([]), minLineLength=min_line_len, maxLineGap=max_line_gap)
-        line_img = np.zeros((img.shape[0], img.shape[1], 3), dtype=np.uint8)
-        LaneFollower.draw_lines(line_img, lines)
-        return line_img
-
-    @staticmethod
-    def weighted_img(img, initial_img, α=0.8, β=0.6, γ=0.):
-        return cv2.addWeighted(initial_img, α, img, β, γ)
-
-    @staticmethod
-    def stanley_control(cross_track_error, heading_error, speed, k, inverted=False):
-        epsilon = 1e-6
-        cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
-        steering_angle = heading_error + cross_track_term
-        return steering_angle
-
-    def lane_finding_pipeline(self, img):
-        if img is None:
-            return None, None, None
+    def process_frame(self, img):
+        """Main pipeline to process a single frame and return lane data."""
         H, W = img.shape[:2]
-        warp = 0.35
-        mirror_point = 1 - warp
-        src = np.float32([
-            [W * warp, H],
-            [0, 0],
-            [W, 0],
-            [W * mirror_point, H]
-        ])
-        # ... (source point visualization code remains the same)
-        overlay_img_src = img.copy()
-        src_int = src.astype(int)
-        for i in range(4):
-            cv2.circle(overlay_img_src, tuple(src_int[i]), 8, (0, 0, 255), -1)
-        cv2.polylines(overlay_img_src, [src_int], isClosed=True, color=(0, 255, 0), thickness=2)
-        cv2.imshow("Source Points Overlay", overlay_img_src)
-        cv2.waitKey(1)
-        
-        dst_width, dst_height = 640, 480
-        dst = np.float32([
-            [0, dst_height], 
-            [0, 0],
-            [dst_width, 0], 
-            [dst_width, dst_height]
-        ])
-        M = cv2.getPerspectiveTransform(dst, src)
-        img_warped = cv2.warpPerspective(img, M, (img.shape[1], img.shape[0]), flags=cv2.INTER_LINEAR)
-        
-        # --- Core Lane Detection Logic ---
+        M = self._get_perspective_transform((H, W))
+        img_warped = cv2.warpPerspective(img, M, (W, H), flags=cv2.INTER_LINEAR)
+
         hsv_img = cv2.cvtColor(img_warped, cv2.COLOR_BGR2HSV)
-        lower_hsv = (0, 120, 120)
-        upper_hsv = (40, 255, 255)
-        mask_yellow = cv2.inRange(hsv_img, lower_hsv, upper_hsv)
-        masked_img = np.copy(img_warped)
-        masked_img[mask_yellow == 0] = [0,0,0]
+        mask_yellow = cv2.inRange(hsv_img, self.config.LANE_HSV_LOWER, self.config.LANE_HSV_UPPER)
         
-        gray_image = self.grayscale(masked_img)
-        blurred_gray_img = self.gaussian_blur(gray_image, kernel_size=5)
-
-        H, W = img_warped.shape[:2]
-        region_height = H // 4
-        
-        vertices_regions = [
-            np.array([[
-                (0, H - (i + 1) * region_height),
-                (0, H - i * region_height),
-                (W, H - i * region_height),
-                (W, H - (i + 1) * region_height)
-            ]], dtype=np.int32) for i in range(3)
-        ]
-        masks = [self.region_of_interest(blurred_gray_img, vertices) for vertices in vertices_regions]
-        
-        contours_data = [self.get_contour_data(mask) for mask in masks]
-        centers = [line for line, contours in contours_data if line]
-        
+        contours, centers = self._find_lane_contours(mask_yellow)
         centers_sorted = sorted(centers, key=lambda c: -c['y'])
-        bottom_two_centers = centers_sorted[:2]
         
-        # --- Visualization and Control Calculation ---
-        visualization_overlay = np.zeros_like(img_warped)
+        pipeline_data = {
+            'warped_image': img_warped, 'color_mask': mask_yellow, 'contours': contours,
+            'centers': centers, 'cross_track_error': 0.0, 'heading_error': 0.0,
+            'lane_points': [], 'cte_intersection_point': None
+        }
 
-        # ✨ NEW: Draw all detected contours ✨
-        for _, contours in contours_data:
-            self.draw_contours(visualization_overlay, contours)
-
-        # Draw all detected centers
-        for center_data in centers:
-            center_point = (center_data['x'], center_data['y'])
-            cv2.circle(visualization_overlay, center_point, 5, (0, 255, 0), 7) 
-
-        # Proceed only if we have two centers
-        if len(bottom_two_centers) == 2:
-            c1_data, c2_data = bottom_two_centers
-            c1 = (c1_data['x'], c1_data['y'])
-            c2 = (c2_data['x'], c2_data['y'])
+        if len(centers_sorted) >= 2:
+            p1 = (centers_sorted[0]['x'], centers_sorted[0]['y'])
+            p2 = (centers_sorted[1]['x'], centers_sorted[1]['y'])
+            pipeline_data['lane_points'] = [p1, p2]
             
-            cv2.line(visualization_overlay, c1, c2, (255, 0, 0), 2)
+            dx, dy = p2[0] - p1[0], p2[1] - p1[1]
 
-            dx = c2[0] - c1[0]
-            dy = c2[1] - c1[1]
-
-            if dx != 0:
-                yaw_deg = 90.0 - math.degrees(math.atan2(-dy, dx))
-                yaw_stan = math.radians(yaw_deg)
-                # yaw_deg = (yaw_deg + 180) % 360 - 90
+            if abs(dx) > 1e-6:
                 m = dy / dx
-                b = c1[1] - m * c1[0]
-                y1_vis = int(m * 0 + b)
-                y2_vis = int(m * W + b)
-                cv2.line(visualization_overlay, (0, y1_vis), (W, y2_vis), (0, 255, 0), 1)
-
-                bottom_center = (W // 2, H)
-                # Calculate the perpendicular slope
-                perp_m = -1 / m if m != 0 else float('inf')
-                # Calculate the y-intercept of the perpendicular line passing through bottom_center
-                perp_b = bottom_center[1] - perp_m * bottom_center[0] if perp_m != float('inf') else 0
-                # Find intersection point between the two lines
-                if perp_m != float('inf'):
-                    x_int = (perp_b - b) / (m - perp_m)
-                    y_int = m * x_int + b
-                else:
-                    x_int = bottom_center[0]
-                    y_int = m * x_int + b
-                intersection = (int(x_int), int(y_int))
-                cv2.line(visualization_overlay, bottom_center, intersection, (255, 0, 255), 1)
-                # Calculate the distance in pixels from bottom_center to intersection
-                dist = math.hypot(intersection[0] - bottom_center[0], intersection[1] - bottom_center[1])
-                dist = dist * 0.725047081
+                b = p1[1] - m * p1[0]
                 
-                x_at_bottom = int((H-b)/m) if m != 0 else 0 # x = (y-b)/m with y = H
-                cv2.circle(visualization_overlay, (x_at_bottom, H), 5, (255, 0, 255), -1)
-                if x_at_bottom < W//2:
-                    dist = -dist
+                pipeline_data['heading_error'] = (math.pi / 2) - math.atan2(-dy, dx)
+                
+                # Use the precise calculation method
+                error_pixels, intersection_point = self._calculate_perpendicular_error(m, b, H, W)
+                pipeline_data['cross_track_error'] = error_pixels * self.config.PIXELS_TO_METERS
+                pipeline_data['cte_intersection_point'] = intersection_point
+                
+        return pipeline_data
 
-                control = self.stanley_control(dist/100, yaw_stan, 1, 1)
-                # Draw an arrow from the middle bottom of the frame showing the steering angle (90 - angle transformation)
-                arrow_length = 100
-                x0, y0 = W // 2, H
-                angle_arrow = math.radians(90) - control  # 90 - angle transformation
-                x1 = int(x0 + arrow_length * math.cos(angle_arrow))
-                y1 = int(y0 - arrow_length * math.sin(angle_arrow))
-                cv2.arrowedLine(visualization_overlay, (x0, y0), (x1, y1), (0, 0, 255), 3, tipLength=0.2)
-                cv2.putText(visualization_overlay, f"yaw_err: {yaw_deg:.1f}deg {yaw_stan:.1f}rad", (10, H-50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
-                cv2.putText(visualization_overlay, f"dist: {dist:.1f}cm", (10, H-30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
-                cv2.putText(visualization_overlay, f"ctrl: {control:.2f}rad", (10, H-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+# -------------------------------------------------------------------
+# --- 4. VISUALIZATION (MODIFIED)
+# -------------------------------------------------------------------
 
-        final_result = self.weighted_img(visualization_overlay, img_warped, α=0.9, β=0.7, γ=0.0)
+class Visualizer:
+    """Handles all OpenCV drawing operations."""
+    def __init__(self, config: Config):
+        self.config = config
 
-        if self.detect_aruco:
-            detected, corners, ids = self.aruco_detector.detect(img)
-            
-        return (final_result, masks[0], img)
+    def draw_pipeline_data(self, image, data, steering_angle):
+        H, W = image.shape[:2]
+        
+        cv2.drawContours(image, data['contours'], -1, (255, 0, 255), 1)
+        for center in data['centers']:
+            cv2.circle(image, (center['x'], center['y']), 5, (0, 255, 0), -1)
+
+        if data['lane_points']:
+            cv2.line(image, data['lane_points'][0], data['lane_points'][1], (255, 0, 0), 3)
+
+        # Draw the perpendicular cross-track error line if it was calculated
+        if data['cte_intersection_point']:
+            bottom_center = (W // 2, H)
+            cv2.line(image, bottom_center, data['cte_intersection_point'], (255, 0, 255), 2)
+
+        # Draw steering angle arrow
+        arrow_length = 100
+        x0, y0 = W // 2, H
+        arrow_angle = (math.pi / 2) - steering_angle
+        x1 = int(x0 + arrow_length * math.cos(arrow_angle))
+        y1 = int(y0 - arrow_length * math.sin(arrow_angle))
+        cv2.arrowedLine(image, (x0, y0), (x1, y1), (0, 0, 255), 3, tipLength=0.2)
+        
+        # Display text info
+        cv2.putText(image, f"CTE: {data['cross_track_error']:.3f} m", (10, H - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
+        cv2.putText(image, f"HE: {math.degrees(data['heading_error']):.1f} deg", (10, H - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
+        cv2.putText(image, f"Steer: {math.degrees(steering_angle):.1f} deg", (10, H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+
+        return image
+
+# -------------------------------------------------------------------
+# --- 5. MAIN EXECUTION
+# -------------------------------------------------------------------
 
 def main():
-    # calibration = CameraCalibration('./picam_calibration_720p3.yaml')
-    # aruco_detector = ArucoDetector(calibration)
-    lane_follower = LaneFollower()
-    pipeline = rs.pipeline()
-    config = rs.config()
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    config = Config()
 
-    profile = pipeline.start(config)
+    # --- CHOOSE YOUR CAMERA SOURCE HERE ---
+    # To use a webcam or video file:
+    camera = OpenCVCamera(config, source=config.OPENCV_CAMERA_SOURCE)
+    # To use an Intel RealSense camera:
+    # camera = RealSenseCamera(config)
+    # ------------------------------------
+
+    # --- Initialization ---
+    speed_subscriber = ZmqSubscriber(config)
+    lane_detector = LaneDetector(config)
+    visualizer = Visualizer(config)
     
-    output = 'acc_7.mp4'
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    result_writer = cv2.VideoWriter(output, fourcc, 30.0, (640 * 2, 480))
+    result_writer = cv2.VideoWriter(
+        config.VIDEO_OUTPUT_FILE, fourcc, config.FRAME_FPS,
+        (config.FRAME_WIDTH * 2, config.FRAME_HEIGHT)
+    )
+
     try:
+        camera.start()
+        speed_subscriber.start()
+        print("Starting main loop. Press 'q' to quit.")
+
         while True:
-            frames = pipeline.wait_for_frames()
-            color_frame = frames.get_color_frame()
-            if not color_frame:
-                continue
-            frame = np.asanyarray(color_frame.get_data())
-            cv2.imshow('RealSense', frame)
-            k = cv2.waitKey(1) & 0xFF
-            if k == ord('q'):
+            # 1. Get Frame
+            frame = camera.get_frame()
+            if frame is None:
+                print("End of video stream or camera error.")
                 break
-            result, mask, detected_aruco = lane_follower.lane_finding_pipeline(frame)
-            if result is not None:
-                cv2.imshow('detected_aruco', detected_aruco)
-                cv2.imshow('frame', result)
-                k = cv2.waitKey(1) & 0xFF
-                frame_resized = cv2.resize(frame, (640, 480))
-                result_resized = cv2.resize(result, (640, 480))
-                stacked = np.hstack((frame_resized, result_resized))
-                result_writer.write(stacked)
-                if k == ord('s'):
-                    cv2.imwrite('image.png', frame_resized)
-                    cv2.imwrite('mask.png', mask)
-                elif k == ord('q'):
-                    break
-                elif k == ord('p'):
-                    while True:
-                        cv2.imshow('detected_aruco', detected_aruco)
-                        cv2.imshow('frame', result)
-                        k = cv2.waitKey(1) & 0xFF
-                        if k == ord('q'):
-                            break
-                        elif k == ord('p'):
-                            break
-                        elif k == ord('c'):
-                            cv2.imwrite("captured_frame.png", frame_resized)
-            else:
-                blank = np.zeros((480, 640 * 2, 3), dtype=np.uint8)
-                result_writer.write(blank)
+
+            # 2. Process for Lane Data
+            lane_data = lane_detector.process_frame(frame)
+            
+            # 3. Get Current Speed
+            current_speed = speed_subscriber.get_speed()
+            current_speed = 1.0
+
+            # 4. Calculate Control Signal
+            steering_angle = StanleyController.calculate_steering(
+                lane_data['cross_track_error'],
+                lane_data['heading_error'],
+                current_speed,
+                config.STANLEY_GAIN,
+                config.SPEED_EPSILON
+            )
+            
+            # 5. Visualize Results
+            warped_view = cv2.cvtColor(lane_data['color_mask'], cv2.COLOR_GRAY2BGR)
+            annotated_warped = visualizer.draw_pipeline_data(warped_view, lane_data, steering_angle)
+            
+            # 6. Display and Save
+            stacked_output = np.hstack((frame, annotated_warped))
+            cv2.imshow('Lane Following View', stacked_output)
+            result_writer.write(stacked_output)
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
     except Exception as e:
-        print(f"Error starting RealSense pipeline: {e}")
-        # return
+        print(f"An error occurred in the main loop: {e}")
     finally:
-        cap.release()
+        # --- Cleanup ---
+        print("Shutting down...")
+        camera.stop()
+        speed_subscriber.stop()
         result_writer.release()
         cv2.destroyAllWindows()
+        print("Shutdown complete.")
 
 if __name__ == "__main__":
     main()
