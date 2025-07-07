@@ -39,6 +39,8 @@ class Config:
     STANLEY_GAIN: float = 1.0  # Proportional gain for cross-track error
     SPEED_EPSILON: float = 1e-6 # Small value to prevent division by zero
 
+    LANE_DETECTION_SEGMENTS: int = 5  # Number of horizontal segments for lane detection
+
 # -------------------------------------------------------------------
 # --- 2. HARDWARE ABSTRACTION & UTILITIES
 # -------------------------------------------------------------------
@@ -182,6 +184,14 @@ class LaneDetector:
         src = np.float32([[W * warp, H], [0, 0], [W, 0], [W * mirror_point, H]])
         dst = np.float32([[0, H], [0, 0], [W, 0], [W, H]])
         return cv2.getPerspectiveTransform(dst, src)
+    
+    @staticmethod
+    def _region_of_interest(img, vertices):
+        """Applies a mask to an image based on the provided vertices."""
+        mask = np.zeros_like(img)
+        cv2.fillPoly(mask, vertices, 255)
+        masked_image = cv2.bitwise_and(img, mask)
+        return masked_image
 
     @staticmethod
     def _find_lane_contours(mask):
@@ -233,12 +243,32 @@ class LaneDetector:
         hsv_img = cv2.cvtColor(img_warped, cv2.COLOR_BGR2HSV)
         mask_yellow = cv2.inRange(hsv_img, self.config.LANE_HSV_LOWER, self.config.LANE_HSV_UPPER)
         
-        contours, centers = self._find_lane_contours(mask_yellow)
-        centers_sorted = sorted(centers, key=lambda c: -c['y'])
-        
+        all_contours = []
+        all_centers = []
+        region_height = H // self.config.LANE_DETECTION_SEGMENTS
+
+        for i in range(self.config.LANE_DETECTION_SEGMENTS):
+            # Define the vertices for the current horizontal segment
+            segment_vertices = np.array([[
+                (0, H - (i + 1) * region_height),
+                (W, H - (i + 1) * region_height),
+                (W, H - i * region_height),
+                (0, H - i * region_height),
+            ]], dtype=np.int32)
+
+            # Mask the yellow-filtered image to this specific segment
+            segment_mask = self._region_of_interest(mask_yellow, segment_vertices)
+
+            # Find contours within this isolated segment
+            contours, centers = self._find_lane_contours(segment_mask)
+            all_contours.extend(contours)
+            all_centers.extend(centers)
+
+        centers_sorted = sorted(all_centers, key=lambda c: -c['y'])
+
         pipeline_data = {
-            'warped_image': img_warped, 'color_mask': mask_yellow, 'contours': contours,
-            'centers': centers, 'cross_track_error': 0.0, 'heading_error': 0.0,
+            'warped_image': img_warped, 'color_mask': mask_yellow, 'contours': all_contours,
+            'centers': all_centers, 'cross_track_error': 0.0, 'heading_error': 0.0,
             'lane_points': [], 'cte_intersection_point': None
         }
 
@@ -246,20 +276,19 @@ class LaneDetector:
             p1 = (centers_sorted[0]['x'], centers_sorted[0]['y'])
             p2 = (centers_sorted[1]['x'], centers_sorted[1]['y'])
             pipeline_data['lane_points'] = [p1, p2]
-            
+
             dx, dy = p2[0] - p1[0], p2[1] - p1[1]
 
             if abs(dx) > 1e-6:
                 m = dy / dx
                 b = p1[1] - m * p1[0]
-                
+
                 pipeline_data['heading_error'] = (math.pi / 2) - math.atan2(-dy, dx)
-                
-                # Use the precise calculation method
+
                 error_pixels, intersection_point = self._calculate_perpendicular_error(m, b, H, W)
                 pipeline_data['cross_track_error'] = error_pixels * self.config.PIXELS_TO_METERS
                 pipeline_data['cte_intersection_point'] = intersection_point
-                
+
         return pipeline_data
 
 # -------------------------------------------------------------------
