@@ -29,8 +29,10 @@ class Config:
     OPENCV_CAMERA_SOURCE: any = "40derajat77cmcrosstrack_run.avi"
 
     # Lane Detection
-    LANE_HSV_LOWER: np.ndarray = np.array([0, 120, 120])
-    LANE_HSV_UPPER: np.ndarray = np.array([40, 255, 255])
+    LANE_HSV_LOWER: np.ndarray = np.array ([0, 120, 120])
+    LANE_HSV_UPPER: np.ndarray = np.array ([40, 255, 255])
+    LANE_HSV_LOWER_GPU: tuple = (0, 120, 120)
+    LANE_HSV_UPPER_GPU: tuple = (40, 255, 255)
     PERSPECTIVE_WARP: float = 0.35
     MIN_CONTOUR_AREA: int = 100
     PIXELS_TO_METERS: float = 0.00725
@@ -38,16 +40,14 @@ class Config:
     # Stanley Controller
     STANLEY_GAIN: float = 0.5
     SPEED_EPSILON: float = 1e-6
-    # Constant speed for controller calculation, since actual speed is handled by teleop.py
-    ASSUMED_SPEED_FOR_CALC: float = 1.0
+    ASSUMED_SPEED_FOR_CALC: float = 1.0 # Constant speed for controller calculation
 
     LANE_DETECTION_SEGMENTS: int = 5
 
-# (The Camera, StanleyController, LaneDetector, and Visualizer classes remain the same as your file)
-# --- The rest of your classes (Camera, RealSenseCamera, OpenCVCamera, StanleyController, LaneDetector, Visualizer) ---
-# --- go here unchanged. They are omitted for brevity. ---
+    USE_DISPLAY: bool = False  # Set to False to disable OpenCV display
+
+# --- The rest of your classes (Camera, StanleyController, Visualizer) go here unchanged. ---
 class Camera(ABC):
-    """Abstract Base Class for camera sources."""
     @abstractmethod
     def start(self): pass
     @abstractmethod
@@ -99,17 +99,31 @@ class StanleyController:
         return heading_error + cross_track_term
 
 class LaneDetector:
-    """Handles the full CV pipeline to detect lane and calculate errors."""
-    def __init__(self, config: Config): self.config = config
+    """Handles the full CV pipeline to detect lane and calculate errors using GPU."""
+    def __init__(self, config: Config, use_cuda: bool):
+        self.config = config
+        self.use_cuda = use_cuda
+        if self.use_cuda:
+            self.gpu_frame = cv2.cuda_GpuMat()
+            self.gpu_warped = cv2.cuda_GpuMat()
+            self.gpu_hsv = cv2.cuda_GpuMat()
+            self.gpu_mask = cv2.cuda_GpuMat()
+            print("LaneDetector initialized with CUDA support.")
+
     def _get_perspective_transform(self, img_shape):
-        H, W = img_shape; warp = self.config.PERSPECTIVE_WARP; mirror_point = 1 - warp
+        H, W = img_shape
+        warp = self.config.PERSPECTIVE_WARP
+        mirror_point = 1 - warp
         src = np.float32([[W * warp, H], [0, 0], [W, 0], [W * mirror_point, H]])
         dst = np.float32([[0, H], [0, 0], [W, 0], [W, H]])
         return cv2.getPerspectiveTransform(dst, src)
+
     @staticmethod
     def _region_of_interest(img, vertices):
-        mask = np.zeros_like(img); cv2.fillPoly(mask, vertices, 255)
+        mask = np.zeros_like(img)
+        cv2.fillPoly(mask, vertices, 255)
         return cv2.bitwise_and(img, mask)
+
     @staticmethod
     def _find_lane_contours(mask):
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -117,45 +131,71 @@ class LaneDetector:
         for contour in contours:
             M = cv2.moments(contour)
             if M['m00'] > Config.MIN_CONTOUR_AREA:
-                cx = int(M["m10"] / M["m00"]); cy = int(M["m01"] / M["m00"])
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
                 centers.append({'x': cx, 'y': cy, 'area': M['m00']})
         return contours, centers
+
     def _calculate_perpendicular_error(self, m, b, H, W):
         bottom_center = (W // 2, H)
-        if abs(m) < 1e-6: x_int, y_int = bottom_center[0], b
+        if abs(m) < 1e-6:
+            x_int, y_int = bottom_center[0], b
         else:
-            perp_m = -1 / m; perp_b = bottom_center[1] - perp_m * bottom_center[0]
-            x_int = (perp_b - b) / (m - perp_m); y_int = m * x_int + b
+            perp_m = -1 / m
+            perp_b = bottom_center[1] - perp_m * bottom_center[0]
+            x_int = (perp_b - b) / (m - perp_m)
+            y_int = m * x_int + b
         intersection_point = (int(x_int), int(y_int))
         error_pixels = math.hypot(x_int - bottom_center[0], y_int - bottom_center[1])
         x_at_bottom = (H - b) / m
         if x_at_bottom < W // 2: error_pixels = -error_pixels
         return error_pixels, intersection_point
+
     def process_frame(self, img):
         H, W = img.shape[:2]
         M = self._get_perspective_transform((H, W))
-        img_warped = cv2.warpPerspective(img, M, (W, H), flags=cv2.INTER_LINEAR)
-        hsv_img = cv2.cvtColor(img_warped, cv2.COLOR_BGR2HSV)
-        mask_yellow = cv2.inRange(hsv_img, self.config.LANE_HSV_LOWER, self.config.LANE_HSV_UPPER)
+
+        if self.use_cuda:
+            self.gpu_frame.upload(img)
+            self.gpu_warped = cv2.cuda.warpPerspective(self.gpu_frame, M, (W, H), flags=cv2.INTER_LINEAR)
+            self.gpu_hsv = cv2.cuda.cvtColor(self.gpu_warped, cv2.COLOR_BGR2HSV)
+            self.gpu_mask = cv2.cuda.inRange(self.gpu_hsv, self.config.LANE_HSV_LOWER_GPU, self.config.LANE_HSV_UPPER_GPU)
+            mask_yellow = self.gpu_mask.download()
+            img_warped = self.gpu_warped.download()
+        else:
+            img_warped = cv2.warpPerspective(img, M, (W, H), flags=cv2.INTER_LINEAR)
+            hsv_img = cv2.cvtColor(img_warped, cv2.COLOR_BGR2HSV)
+            mask_yellow = cv2.inRange(hsv_img, self.config.LANE_HSV_LOWER, self.config.LANE_HSV_UPPER)
+
         all_contours, all_centers = [], []
         region_height = H // self.config.LANE_DETECTION_SEGMENTS
         for i in range(self.config.LANE_DETECTION_SEGMENTS):
-            segment_vertices = np.array([[(0, H - (i + 1) * region_height), (W, H - (i + 1) * region_height), (W, H - i * region_height), (0, H - i * region_height),]], dtype=np.int32)
+            segment_vertices = np.array([[(0, H - (i + 1) * region_height), (W, H - (i + 1) * region_height),
+                                          (W, H - i * region_height), (0, H - i * region_height)]], dtype=np.int32)
             segment_mask = self._region_of_interest(mask_yellow, segment_vertices)
             contours, centers = self._find_lane_contours(segment_mask)
-            all_contours.extend(contours); all_centers.extend(centers)
+            all_contours.extend(contours)
+            all_centers.extend(centers)
+
         centers_sorted = sorted(all_centers, key=lambda c: -c['y'])
-        pipeline_data = {'warped_image': img_warped, 'color_mask': mask_yellow, 'contours': all_contours, 'centers': all_centers, 'cross_track_error': 0.0, 'heading_error': 0.0, 'lane_points': [], 'cte_intersection_point': None}
+        pipeline_data = {'warped_image': img_warped, 'color_mask': mask_yellow, 'contours': all_contours,
+                         'centers': all_centers, 'cross_track_error': 0.0, 'heading_error': 0.0,
+                         'lane_points': [], 'cte_intersection_point': None}
+
         if len(centers_sorted) >= 2:
-            p1, p2 = (centers_sorted[0]['x'], centers_sorted[0]['y']), (centers_sorted[1]['x'], centers_sorted[1]['y'])
+            p1 = (centers_sorted[0]['x'], centers_sorted[0]['y'])
+            p2 = (centers_sorted[1]['x'], centers_sorted[1]['y'])
             pipeline_data['lane_points'] = [p1, p2]
             dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+
             if abs(dx) > 1e-6:
-                m = dy / dx; b = p1[1] - m * p1[0]
+                m = dy / dx
+                b = p1[1] - m * p1[0]
                 pipeline_data['heading_error'] = (math.pi / 2) - math.atan2(-dy, dx)
                 error_pixels, intersection_point = self._calculate_perpendicular_error(m, b, H, W)
                 pipeline_data['cross_track_error'] = error_pixels * self.config.PIXELS_TO_METERS
                 pipeline_data['cte_intersection_point'] = intersection_point
+
         return pipeline_data
 
 class Visualizer:
@@ -176,6 +216,7 @@ class Visualizer:
         cv2.putText(image, f"HE: {math.degrees(data['heading_error']):.1f} deg", (10, H - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
         cv2.putText(image, f"Steer: {math.degrees(steering_angle):.1f} deg", (10, H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
         return image
+
 # -------------------------------------------------------------------
 # --- 5. MAIN EXECUTION
 # -------------------------------------------------------------------
@@ -183,18 +224,25 @@ class Visualizer:
 def main():
     config = Config()
 
+    # --- CUDA Check ---
+    use_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
+    if use_cuda:
+        print("CUDA is available. Using GPU for acceleration.")
+    else:
+        print("CUDA not available. Running on CPU.")
+
     # --- CHOOSE YOUR CAMERA SOURCE HERE ---
-    # camera = OpenCVCamera(config, source=config.OPENCV_CAMERA_SOURCE)
-    camera = RealSenseCamera(config)
+    camera = OpenCVCamera(config, source=config.OPENCV_CAMERA_SOURCE)
+    # camera = RealSenseCamera(config)
     
-    # --- ZMQ Publisher Setup (no changes here) ---
+    # --- ZMQ Publisher Setup ---
     context = zmq.Context()
     pub_socket = context.socket(zmq.PUB)
     pub_socket.bind(config.ZMQ_PUB_URL)
     print(f"Publishing lane assist angles on {config.ZMQ_PUB_URL}")
 
-    # --- Initialization (no changes here) ---
-    lane_detector = LaneDetector(config)
+    # --- Initialization ---
+    lane_detector = LaneDetector(config, use_cuda)
     visualizer = Visualizer(config)
     
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -207,12 +255,14 @@ def main():
     try:
         camera.start()
         print("Starting main loop. Press 'q' to quit.")
+        
+        start_time = time.time()
 
         while True:
             # 1. Get Frame
             frame = camera.get_frame()
             if frame is None:
-                print("End of video stream or camera error.")
+                print("\nEnd of video stream or camera error.")
                 break
 
             # 2. Process for Lane Data
@@ -228,36 +278,39 @@ def main():
             )
             steering_angle_deg = math.degrees(steering_angle_rad)
             count += 1
-            print(f"\rSteering angle: {steering_angle_deg:<3.1f} deg {count}", end="")
             
             # 4. Publish the steering angle using Protobuf
-            # --- MODIFICATION START ---
-            command = steering_command_pb2.SteeringCommand() # Create a Protobuf message instance
-            command.auto_steer_angle = steering_angle_deg      # Set the value
-            
-            serialized_command = command.SerializeToString() # Serialize to binary string
-            
+            command = steering_command_pb2.SteeringCommand()
+            command.auto_steer_angle = steering_angle_deg
+            serialized_command = command.SerializeToString()
             pub_socket.send_string(config.ZMQ_TOPIC, flags=zmq.SNDMORE)
-            pub_socket.send(serialized_command) # Use send() for binary data, not send_json()
-            # --- MODIFICATION END ---
+            pub_socket.send(serialized_command)
 
             # 5. Visualize Results
-            warped_view = cv2.cvtColor(lane_data['color_mask'], cv2.COLOR_GRAY2BGR)
+            warped_view = lane_data.get('warped_image', np.zeros_like(frame))
             annotated_warped = visualizer.draw_pipeline_data(warped_view, lane_data, steering_angle_rad)
             
             # 6. Display and Save
             stacked_output = np.hstack((frame, annotated_warped))
-            cv2.imshow('Lane Following View', stacked_output)
+            if config.USE_DISPLAY:
+                cv2.imshow('Lane Following View', stacked_output)
             result_writer.write(stacked_output)
+            
+            # Print FPS
+            elapsed_time = time.time() - start_time
+            fps = count / elapsed_time
+            print(f"\rSteering: {steering_angle_deg:<3.1f} deg | FPS: {fps:.2f}", end="")
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
     except Exception as e:
-        print(f"An error occurred in the main loop: {e}")
+        import traceback
+        print(f"\nAn error occurred in the main loop: {e}")
+        traceback.print_exc()
     finally:
         # --- Cleanup ---
-        print("Shutting down...")
+        print("\nShutting down...")
         camera.stop()
         result_writer.release()
         cv2.destroyAllWindows()
