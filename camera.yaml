@@ -1,0 +1,20 @@
+# publisher_config.yaml
+# Configuration for the ZMQ Camera Publisher
+
+camera:
+  # Source can be a camera index (e.g., 0, 1) or a path to a video file
+  # e.g., "C:/Users/YourUser/Videos/my_lane_video.mp4"
+  # e.g., "/home/user/videos/my_lane_video.mp4"
+  source: 0
+  frame_width: 640
+  frame_height: 480
+  frame_fps: 30
+
+zmq:
+  # The URL this publisher will bind to.
+  # Use "*" to allow connections from any IP on the network.
+  # Use "localhost" or "127.0.0.1" to only allow connections from the same machine.
+  pub_frame_url: "ipc:///tmp/cam_frame.ipc"
+
+  # The topic string for the frames. The subscriber must use the same topic.
+  frame_topic: "cam_frame"

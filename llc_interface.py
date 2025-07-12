@@ -29,9 +29,8 @@ FUNC_STEER = 0x06
 FUNC_INCOMING_DATA = 0x11
 DOWNSAMPLE_RATE = 10  # Hz, the rate commands will be sent to the vehicle
 
-# --- NEW: Braking Configuration ---
-BRAKE_RAMP_RATE = 25  # Brake force percentage increase per second (e.g., 25 means 0-100% in 4 seconds)
-MAX_BRAKE_FORCE = 100 # Maximum brake force percentage
+BRAKE_RAMP_RATE = 5  # Brake force percentage increase per second (e.g., 25 means 0-100% in 4 seconds)
+MAX_BRAKE_FORCE = 20 # Maximum brake force percentage
 
 # --- REVISED: Thread-safe object to store the latest command and stop time ---
 class LatestCommand:
