@@ -1,0 +1,12 @@
+%YAML:1.0
+---
+robot_to_camera: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [1, 0, 0, 0.2,
+          0, 0.9397, 0.3420, 0.0,
+          0, -0.3420, 0.9397, 0.1,
+          0, 0, 0, 1]
+# This matrix represents the transformation from the robot's footprint to the camera frame.
+# 0.2 meters forward, 0.1 meters up, and a rotation of approximately 20 degrees around the Z-axis.
