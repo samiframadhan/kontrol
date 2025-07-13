@@ -13,7 +13,8 @@ from abc import ABC, abstractmethod
 import steering_command_pb2
 
 # Assuming managed_node.py is in the same directory or accessible in the Python path
-from managed_node import ManagedNode
+from managednode import ManagedNode
+from camera import RealSenseCamera, OpenCVCamera, Camera, ZMQCamera
 
 # -------------------------------------------------------------------
 # --- 1. CONFIGURATION & LOGGING (Mostly unchanged)
@@ -38,96 +39,9 @@ def setup_logging():
     # but we can call this if specific formatting is desired.
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-
 # -------------------------------------------------------------------
-# --- 2. CORE CLASSES (Unchanged: Camera, StanleyController, etc.)
+# --- 2. LANE DETECTION CLASSES
 # -------------------------------------------------------------------
-
-class Camera(ABC):
-    @abstractmethod
-    def start(self): pass
-    @abstractmethod
-    def get_frame(self): pass
-    @abstractmethod
-    def stop(self): pass
-
-class RealSenseCamera(Camera):
-    """Camera implementation for Intel RealSense."""
-    def __init__(self, cam_config: dict):
-        self.config = cam_config
-        self.pipeline = rs.pipeline()
-        self.rs_config = rs.config()
-        self.rs_config.enable_stream(rs.stream.color, self.config['frame_width'], self.config['frame_height'], rs.format.bgr8, self.config['frame_fps'])
-    def start(self):
-        logging.info("Starting RealSense camera...")
-        self.pipeline.start(self.rs_config)
-    def get_frame(self):
-        frames = self.pipeline.wait_for_frames()
-        color_frame = frames.get_color_frame()
-        if not color_frame:
-            logging.warning("No color frame received from RealSense camera.")
-            return None
-        return np.asanyarray(color_frame.get_data())
-    def stop(self):
-        logging.info("Stopping RealSense camera.")
-        self.pipeline.stop()
-
-class OpenCVCamera(Camera):
-    """Camera implementation for any source supported by OpenCV."""
-    def __init__(self, cam_config: dict, source):
-        self.config = cam_config; self.source = source; self.cap = None
-    def start(self):
-        logging.info(f"Starting OpenCV camera with source: {self.source}...")
-        self.cap = cv2.VideoCapture(self.source)
-        if not self.cap.isOpened(): raise IOError(f"Cannot open OpenCV source: {self.source}")
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config['frame_width'])
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config['frame_height'])
-        self.cap.set(cv2.CAP_PROP_FPS, self.config['frame_fps'])
-    def get_frame(self):
-        ret, frame = self.cap.read()
-        return frame if ret else None
-    def stop(self):
-        if self.cap:
-            logging.info("Stopping OpenCV camera.")
-            self.cap.release()
-
-class ZMQCamera(Camera):
-    """Camera implementation for a ZMQ subscription source."""
-    def __init__(self, cam_config: dict, zmq_sub_config: dict, context: zmq.Context):
-        self.config = cam_config
-        self.zmq_config = zmq_sub_config
-        self.context = context # Use a shared ZMQ context
-        self.socket = None
-        self.poller = None
-        self.frame_shape = (self.config['frame_height'], self.config['frame_width'], 3)
-        self.dtype = np.uint8
-
-    def start(self):
-        logging.info(f"Connecting to ZMQ frame publisher at {self.zmq_config['sub_frame_url']}...")
-        self.socket = self.context.socket(zmq.SUB)
-        self.socket.connect(self.zmq_config['sub_frame_url'])
-        self.socket.setsockopt_string(zmq.SUBSCRIBE, self.zmq_config['frame_topic'])
-        self.poller = zmq.Poller()
-        self.poller.register(self.socket, zmq.POLLIN)
-        logging.info(f"Subscribed to frame topic: '{self.zmq_config['sub_frame_topic']}'")
-
-    def get_frame(self):
-        try:
-            # Poll with a timeout to avoid blocking indefinitely
-            socks = dict(self.poller.poll(100))
-            if self.socket in socks and socks[self.socket] == zmq.POLLIN:
-                topic = self.socket.recv_string()
-                frame_bytes = self.socket.recv()
-                frame = np.frombuffer(frame_bytes, dtype=self.dtype)
-                return frame.reshape(self.frame_shape)
-        except Exception as e:
-            logging.error(f"Error processing ZMQ frame: {e}")
-        return None
-
-    def stop(self):
-        if self.socket:
-            logging.info("Closing ZMQ frame subscriber socket.")
-            self.socket.close()
 
 class StanleyController:
     """Calculates steering angle using the Stanley control method."""
@@ -178,18 +92,47 @@ class LaneDetector:
         return cv2.bitwise_and(img, mask)
 
     def _calculate_perpendicular_error(self, m, b, H, W):
-        bottom_center = (W // 2, H)
-        if abs(m) < 1e-6:
-            x_int, y_int = bottom_center[0], b
+        """
+        Calculates the perpendicular distance from the virtual axle center to the detected lane line.
+        This version accounts for the physical offset between the camera's view and the axle.
+        """
+        # --- MODIFICATION START ---
+        
+        # Get conversion and offset from config. Use .get() for safety if param is missing.
+        pixels_per_meter = 1.0 / self.ld_config.get('pixels_to_meters', 0.0035) # Meters to pixels
+        axle_offset_m = self.ld_config.get('axle_to_bottom_frame_m', 0.0)
+        
+        # Calculate the vertical offset in pixels
+        y_offset_pixels = int(axle_offset_m * pixels_per_meter)
+        
+        # Define the virtual axle point on the bird's-eye view image
+        # This is our new reference point for all error calculations.
+        virtual_axle_point = (W // 2, H - y_offset_pixels)
+        
+        # Calculate the point on the detected lane line that is perpendicular to our virtual axle point
+        if abs(m) < 1e-6: # Avoid division by zero for horizontal lines
+            x_int, y_int = virtual_axle_point[0], b
         else:
             perp_m = -1 / m
-            perp_b = bottom_center[1] - perp_m * bottom_center[0]
+            perp_b = virtual_axle_point[1] - perp_m * virtual_axle_point[0]
             x_int = (perp_b - b) / (m - perp_m)
             y_int = m * x_int + b
+            
         intersection_point = (int(x_int), int(y_int))
-        error_pixels = math.hypot(x_int - bottom_center[0], y_int - bottom_center[1])
-        x_at_bottom = (H - b) / m if abs(m) > 1e-6 else float('inf')
-        if x_at_bottom < W // 2: error_pixels = -error_pixels
+        
+        # Calculate the distance (error) in pixels
+        error_pixels = math.hypot(x_int - virtual_axle_point[0], y_int - virtual_axle_point[1])
+        
+        # Determine the sign of the error. Instead of checking the line's x-intercept at the
+        # image bottom (y=H), we check it at the virtual axle's y-coordinate.
+        virtual_axle_y_coord = H - y_offset_pixels
+        x_at_axle_line = (virtual_axle_y_coord - b) / m if abs(m) > 1e-6 else float('inf')
+        
+        if x_at_axle_line < W // 2:
+            error_pixels = -error_pixels
+            
+        # --- MODIFICATION END ---
+            
         return error_pixels, intersection_point
 
     def process_frame(self, img):

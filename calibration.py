@@ -8,13 +8,13 @@ class CharucoCalibrator:
         self.video_path = video_path
         self.num_captures = num_captures
 
-        self.CHARUCOBOARD_ROWCOUNT = 7
-        self.CHARUCOBOARD_COLCOUNT = 5
-        self.ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_6X6_50)
+        self.CHARUCOBOARD_ROWCOUNT = 8
+        self.CHARUCOBOARD_COLCOUNT = 6
+        self.ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_5X5_50)
         self.CHARUCO_BOARD = aruco.CharucoBoard(
             (self.CHARUCOBOARD_COLCOUNT, self.CHARUCOBOARD_ROWCOUNT),
-            squareLength=0.0385,
-            markerLength=0.0230,
+            squareLength=0.032,
+            markerLength=0.015,
             dictionary=self.ARUCO_DICT)
 
         self.corners_all = []
@@ -45,7 +45,7 @@ class CharucoCalibrator:
                 image=gray,
                 board=self.CHARUCO_BOARD)
 
-            if response > 20:
+            if response > 15:
                 self.corners_all.append(charuco_corners)
                 self.ids_all.append(charuco_ids)
                 img = aruco.drawDetectedCornersCharuco(

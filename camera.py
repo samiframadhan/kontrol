@@ -6,9 +6,103 @@ import time
 import logging
 import threading
 from typing import Dict, Any
+import numpy as np
+import pyrealsense2 as rs
+from abc import ABC, abstractmethod
 
 # Assuming managednode.py is in the same directory or accessible in the python path
 from managednode import ManagedNode
+
+# -------------------------------------------------------------------
+# --- 2. CORE CLASSES -----------------------------------------------
+# -------------------------------------------------------------------
+
+class Camera(ABC):
+    @abstractmethod
+    def start(self): pass
+    @abstractmethod
+    def get_frame(self): pass
+    @abstractmethod
+    def stop(self): pass
+
+class RealSenseCamera(Camera):
+    """Camera implementation for Intel RealSense."""
+    def __init__(self, cam_config: dict):
+        self.config = cam_config
+        self.pipeline = rs.pipeline()
+        self.rs_config = rs.config()
+        self.rs_config.enable_stream(rs.stream.color, self.config['frame_width'], self.config['frame_height'], rs.format.bgr8, self.config['frame_fps'])
+    def start(self):
+        logging.info("Starting RealSense camera...")
+        self.pipeline.start(self.rs_config)
+    def get_frame(self):
+        frames = self.pipeline.wait_for_frames()
+        color_frame = frames.get_color_frame()
+        if not color_frame:
+            logging.warning("No color frame received from RealSense camera.")
+            return None
+        return np.asanyarray(color_frame.get_data())
+    def stop(self):
+        logging.info("Stopping RealSense camera.")
+        self.pipeline.stop()
+
+class OpenCVCamera(Camera):
+    """Camera implementation for any source supported by OpenCV."""
+    def __init__(self, cam_config: dict, source):
+        self.config = cam_config; self.source = source; self.cap = None
+    def start(self):
+        logging.info(f"Starting OpenCV camera with source: {self.source}...")
+        self.cap = cv2.VideoCapture(self.source)
+        if not self.cap.isOpened(): raise IOError(f"Cannot open OpenCV source: {self.source}")
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config['frame_width'])
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config['frame_height'])
+        self.cap.set(cv2.CAP_PROP_FPS, self.config['frame_fps'])
+    def get_frame(self):
+        ret, frame = self.cap.read()
+        return frame if ret else None
+    def stop(self):
+        if self.cap:
+            logging.info("Stopping OpenCV camera.")
+            self.cap.release()
+
+class ZMQCamera(Camera):
+    """Camera implementation for a ZMQ subscription source."""
+    def __init__(self, cam_config: dict, zmq_sub_config: dict, context: zmq.Context):
+        self.config = cam_config
+        self.zmq_config = zmq_sub_config
+        self.context = context # Use a shared ZMQ context
+        self.socket = None
+        self.poller = None
+        self.frame_shape = (self.config['frame_height'], self.config['frame_width'], 3)
+        self.dtype = np.uint8
+
+    def start(self):
+        logging.info(f"Connecting to ZMQ frame publisher at {self.zmq_config['sub_frame_url']}...")
+        self.socket = self.context.socket(zmq.SUB)
+        self.socket.connect(self.zmq_config['sub_frame_url'])
+        self.socket.setsockopt_string(zmq.SUBSCRIBE, self.zmq_config['sub_frame_topic'])
+        self.poller = zmq.Poller()
+        self.poller.register(self.socket, zmq.POLLIN)
+        logging.info(f"Subscribed to frame topic: '{self.zmq_config['sub_frame_topic']}'")
+
+    def get_frame(self):
+        try:
+            # Poll with a timeout to avoid blocking indefinitely
+            socks = dict(self.poller.poll(100))
+            if self.socket in socks and socks[self.socket] == zmq.POLLIN:
+                topic = self.socket.recv_string()
+                frame_bytes = self.socket.recv()
+                frame = np.frombuffer(frame_bytes, dtype=self.dtype)
+                return frame.reshape(self.frame_shape)
+        except Exception as e:
+            logging.error(f"Error processing ZMQ frame: {e}")
+        return None
+
+    def stop(self):
+        if self.socket:
+            logging.info("Closing ZMQ frame subscriber socket.")
+            self.socket.close()
+
 
 class CameraNode(ManagedNode):
     """

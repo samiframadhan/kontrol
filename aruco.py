@@ -22,7 +22,6 @@ class ArucoDetector:
         return camera_matrix, dist_coeffs
     
     def publish_marker(self, marker_id, position):
-        # Placeholder for publishing marker data, e.g., to a ROS topic
         self.socket.send_string("marker_data", flags=zmq.SNDMORE)
         self.socket.send_pyobj({"id": marker_id, "position": position})
         print(f"Marker ID: {marker_id}, Position: {position}")
@@ -65,5 +64,5 @@ class ArucoDetector:
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    detector = ArucoDetector("calibration.yaml")
+    detector = ArucoDetector("calibrationc270.yaml", marker_length=0.049)
     detector.run()

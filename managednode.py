@@ -137,6 +137,8 @@ class ManagedNode(ABC):
             except zmq.ZMQError as e:
                 self.logger.error(f"ZMQ error in command loop: {e}")
                 break
+            finally:
+                self.shutdown_event.set() if self.state == "shutdown" else None
         self.logger.info("Command loop terminated.")
 
     def _heartbeat_loop(self):
