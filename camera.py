@@ -1,131 +1,160 @@
-# zmq_camera_publisher.py
+# camera.py
 import cv2
 import zmq
-import numpy as np
+import yaml
 import time
 import logging
-import yaml
+import threading
 from typing import Dict, Any
 
-def setup_logging():
-    """Configures basic logging for the application."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+# Assuming managednode.py is in the same directory or accessible in the python path
+from managednode import ManagedNode
 
-def load_config(config_path: str = 'camera.yaml') -> Dict[str, Any]:
+class CameraNode(ManagedNode):
     """
-    Loads configuration from a YAML file.
-
-    Args:
-        config_path: Path to the YAML configuration file.
-
-    Returns:
-        A dictionary containing the configuration.
+    A managed node for capturing frames from a camera or video file
+    and publishing them over a ZMQ PUB socket.
     """
-    logging.info(f"Loading configuration from {config_path}...")
-    try:
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        logging.info("Configuration loaded successfully.")
-        return config
-    except FileNotFoundError:
-        logging.error(f"Configuration file not found at: {config_path}")
-        exit(1)
-    except Exception as e:
-        logging.error(f"Error loading YAML configuration: {e}")
-        exit(1)
+    def __init__(self, node_name: str, config_path: str = 'camera.yaml'):
+        super().__init__(node_name)
+        self.config_path = config_path
+        self.config = None
+        self.pub_socket = None
+        self.cap = None
+        self.publishing_thread = None
+        self.publishing_active = threading.Event()
 
-def main():
-    """
-    Main function to capture frames from a camera or video file
-    and publish them over a ZMQ PUB socket.
-    """
-    setup_logging()
-    config = load_config()
+    def on_configure(self) -> bool:
+        """
+        Loads configuration and sets up ZMQ resources.
+        """
+        self.logger.info("Configuring Camera Node...")
+        try:
+            with open(self.config_path, 'r') as f:
+                self.config = yaml.safe_load(f)
+            
+            # --- ZMQ Publisher Setup ---
+            zmq_config = self.config.get('zmq', {})
+            self.pub_socket = self.context.socket(zmq.PUB)
+            self.pub_socket.bind(zmq_config['pub_frame_url'])
+            self.logger.info(f"ZMQ Publisher bound to {zmq_config['pub_frame_url']}")
+            
+            return True
+        except FileNotFoundError:
+            self.logger.error(f"Configuration file not found at: {self.config_path}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error during configuration: {e}")
+            return False
 
-    camera_config = config.get('camera', {})
-    zmq_config = config.get('zmq', {})
+    def on_activate(self) -> bool:
+        """
+        Opens the camera and starts the frame publishing thread.
+        """
+        self.logger.info("Activating Camera Node...")
+        camera_config = self.config.get('camera', {})
+        source = camera_config.get('source', 0)
+        
+        self.cap = cv2.VideoCapture(source)
+        if not self.cap.isOpened():
+            self.logger.error(f"Cannot open video source: {source}")
+            return False
 
-    # --- ZMQ Setup ---
-    context = zmq.Context()
-    pub_socket = context.socket(zmq.PUB)
-    try:
-        pub_socket.bind(zmq_config['pub_frame_url'])
-        logging.info(f"ZMQ Publisher bound to {zmq_config['pub_frame_url']}")
-    except zmq.error.ZMQError as e:
-        logging.error(f"Could not bind ZMQ socket: {e}. Is the address already in use?")
-        context.term()
-        return
+        # Set camera properties
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, camera_config.get('frame_width', 640))
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_config.get('frame_height', 480))
+        self.cap.set(cv2.CAP_PROP_FPS, camera_config.get('frame_fps', 30))
 
-    # --- OpenCV Camera Setup ---
-    source = camera_config.get('source', 0) # Default to webcam 0
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
-        logging.error(f"Cannot open video source: {source}")
-        pub_socket.close()
-        context.term()
-        return
+        self.logger.info(f"Camera source '{source}' opened successfully.")
+        
+        # Start the publishing loop in a separate thread
+        self.publishing_active.set()
+        self.publishing_thread = threading.Thread(target=self._publish_loop, daemon=True)
+        self.publishing_thread.start()
+        
+        self.logger.info("Frame publishing thread started.")
+        return True
 
-    # Set camera properties from config
-    frame_width = camera_config.get('frame_width', 640)
-    frame_height = camera_config.get('frame_height', 480)
-    fps = camera_config.get('frame_fps', 30)
+    def on_deactivate(self) -> bool:
+        """
+        Stops the publishing thread and releases the camera.
+        """
+        self.logger.info("Deactivating Camera Node...")
+        self.publishing_active.clear() # Signal the loop to stop
+        if self.publishing_thread and self.publishing_thread.is_alive():
+            self.publishing_thread.join(timeout=1.0)
+        
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+            self.logger.info("Camera released.")
+        
+        self.cap = None
+        self.publishing_thread = None
+        return True
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
-    cap.set(cv2.CAP_PROP_FPS, fps)
+    def on_shutdown(self) -> bool:
+        """
+        Cleans up all resources.
+        """
+        self.logger.info("Shutting down Camera Node...")
+        if self.state == "active":
+            self.on_deactivate() # First, deactivate to stop threads and release camera
 
-    logging.info(f"Camera source '{source}' opened successfully.")
-    logging.info(f"Publishing at approximately {fps} FPS.")
-    logging.info("Press Ctrl+C to stop the publisher.")
+        if self.pub_socket:
+            self.pub_socket.close()
+            self.logger.info("Publisher socket closed.")
+            
+        return True
 
-    frame_count = 0
-    start_time = time.time()
-    sleep_interval = 1.0 / fps
+    def _publish_loop(self):
+        """
+        The main loop for capturing and publishing frames.
+        """
+        camera_config = self.config.get('camera', {})
+        zmq_config = self.config.get('zmq', {})
+        
+        frame_width = camera_config.get('frame_width', 640)
+        frame_height = camera_config.get('frame_height', 480)
+        fps = camera_config.get('frame_fps', 30)
+        sleep_interval = 1.0 / fps
+        frame_topic = zmq_config.get('frame_topic', 'frame')
 
-    try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                logging.warning("End of video file or camera disconnected. Stopping.")
+        self.logger.info(f"Publishing topic '{frame_topic}' at approximately {fps} FPS.")
+        
+        while self.publishing_active.is_set():
+            if not self.cap or not self.cap.isOpened():
+                self.logger.warning("Camera is not available. Stopping publish loop.")
                 break
 
-            # Ensure the frame is the correct size, resizing if necessary
-            # This is a fallback in case the cap.set() calls fail silently
+            ret, frame = self.cap.read()
+            if not ret:
+                self.logger.warning("End of video file or camera disconnected. Stopping.")
+                break
+
+            # Resize if necessary (fallback)
             if frame.shape[1] != frame_width or frame.shape[0] != frame_height:
                  frame = cv2.resize(frame, (frame_width, frame_height))
 
-            # Send the frame as a multipart message
-            # 1. The topic (so subscribers can filter)
-            # 2. The frame data as bytes
-            pub_socket.send_string(zmq_config['frame_topic'], flags=zmq.SNDMORE)
-            pub_socket.send(frame.tobytes())
+            # Publish the frame
+            try:
+                self.pub_socket.send_string(frame_topic, flags=zmq.SNDMORE)
+                self.pub_socket.send(frame.tobytes())
+            except zmq.ZMQError as e:
+                self.logger.error(f"ZMQ error while sending frame: {e}")
+                break
 
-            frame_count += 1
-            logging.debug(f"Published frame {frame_count}")
-
-            # Control the publishing rate
             time.sleep(sleep_interval)
+        
+        self.logger.info("Publish loop has terminated.")
 
-            if frame_count % (fps * 5) == 0: # Log FPS every 5 seconds
-                elapsed_time = time.time() - start_time
-                current_fps = frame_count / elapsed_time if elapsed_time > 0 else 0
-                logging.info(f"Average publishing FPS: {current_fps:.2f}")
 
-    except KeyboardInterrupt:
-        logging.info("Ctrl+C detected. Shutting down.")
-    except Exception as e:
-        logging.exception("An unhandled error occurred in the main loop:")
-    finally:
-        # --- Cleanup ---
-        logging.info("Cleaning up resources...")
-        cap.release()
-        pub_socket.close()
-        context.term()
-        logging.info("Shutdown complete.")
+def main():
+    """
+    Main function to instantiate and run the CameraNode.
+    """
+    # Note: Logging is configured within the ManagedNode base class now.
+    camera_node = CameraNode(node_name="camera_node", config_path="camera.yaml")
+    camera_node.run()
 
 if __name__ == "__main__":
     main()

@@ -1,92 +1,46 @@
-# linefollowing_rs_yaml.py (Integrated Version with YAML Config, Improved Logging, and ZMQ Frame Subscription)
+# linefollowing_rs.py (Refactored as a ManagedNode)
 import cv2
 import math
 import numpy as np
 import zmq
 import time
 import logging
-import yaml # Import the YAML library
+import yaml
+import threading
 from pyrealsense2 import pyrealsense2 as rs
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import steering_command_pb2
 
+# Assuming managed_node.py is in the same directory or accessible in the Python path
+from managed_node import ManagedNode
+
 # -------------------------------------------------------------------
-# --- 1. CONFIGURATION
+# --- 1. CONFIGURATION & LOGGING (Mostly unchanged)
 # -------------------------------------------------------------------
 
 def load_config(config_path='linedetection.yaml'):
-    """
-    Loads configuration from a YAML file and processes values.
-
-    To use the new ZMQ camera source, update your YAML file as follows:
-
-    camera:
-      source_type: 'zmq'  # Can be 'realsense', 'opencv', or 'zmq'
-      # ... other camera params like frame_width, frame_height, etc. are still needed
-
-    zmq:
-      # For publishing steering commands (no change)
-      pub_steer_url: "tcp://*:5557"
-      steer_topic: "steer_cmd"
-
-      # Add these for subscribing to frames
-      sub_frame_url: "tcp://localhost:5556" # URL of the frame publisher
-      frame_topic: "cam_frame"               # Topic to subscribe to for frames
-    """
+    """Loads configuration from a YAML file."""
     logging.info(f"Loading configuration from {config_path}...")
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
-
-    # Convert HSV lists from YAML to NumPy arrays and Tuples for OpenCV
     ld_config = config['lane_detection']
     ld_config['hsv_lower_np'] = np.array(ld_config['hsv_lower'])
     ld_config['hsv_upper_np'] = np.array(ld_config['hsv_upper'])
     ld_config['hsv_lower_gpu_tuple'] = tuple(ld_config['hsv_lower'])
     ld_config['hsv_upper_gpu_tuple'] = tuple(ld_config['hsv_upper'])
-
     logging.info("Configuration loaded successfully.")
     return config
 
-class KeyboardInput():
-    """Handles keyboard input for controlling the application."""
-    def __init__(self):
-        self.UNIX = False
-        self.tty = None
-        self.termios = None
-        self.select = None
-        self.settings = None
-        self.sys = None
-        try:
-            import sys
-            if sys.stdin.isatty():
-                import tty, termios, select
-                self.sys = sys
-                self.UNIX = True
-                self.tty, self.termios, self.select = tty, termios, select
-                self.settings = termios.tcgetattr(sys.stdin)
-        except (ImportError, AttributeError):
-             pass
-
-    def get_key(self, timeout=0.001):
-        """Gets a single character from standard input."""
-        if self.UNIX and self.settings:
-            self.tty.setraw(self.sys.stdin.fileno())
-            rlist, _, _ = self.select.select([self.sys.stdin], [], [], timeout)
-            if rlist:
-                key = self.sys.stdin.read(1)
-            else:
-                key = ''
-            self.termios.tcsetattr(self.sys.stdin, self.termios.TCSADRAIN, self.settings)
-            return key
-        return None
-
 def setup_logging():
     """Configures the logging for the application."""
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    # The ManagedNode class already sets up basic logging,
+    # but we can call this if specific formatting is desired.
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
 
 # -------------------------------------------------------------------
-# --- 2. CORE CLASSES
+# --- 2. CORE CLASSES (Unchanged: Camera, StanleyController, etc.)
 # -------------------------------------------------------------------
 
 class Camera(ABC):
@@ -152,31 +106,28 @@ class ZMQCamera(Camera):
         logging.info(f"Connecting to ZMQ frame publisher at {self.zmq_config['sub_frame_url']}...")
         self.socket = self.context.socket(zmq.SUB)
         self.socket.connect(self.zmq_config['sub_frame_url'])
-        self.socket.setsockopt_string(zmq.SUBSCRIBE, self.zmq_config['sub_frame_topic'])
+        self.socket.setsockopt_string(zmq.SUBSCRIBE, self.zmq_config['frame_topic'])
         self.poller = zmq.Poller()
         self.poller.register(self.socket, zmq.POLLIN)
         logging.info(f"Subscribed to frame topic: '{self.zmq_config['sub_frame_topic']}'")
 
     def get_frame(self):
-        # Poll the socket for a message with a timeout of 0 to return immediately
-        socks = dict(self.poller.poll(0))
-        if self.socket in socks and socks[self.socket] == zmq.POLLIN:
-            try:
-                # Receive topic and frame data
+        try:
+            # Poll with a timeout to avoid blocking indefinitely
+            socks = dict(self.poller.poll(100))
+            if self.socket in socks and socks[self.socket] == zmq.POLLIN:
                 topic = self.socket.recv_string()
                 frame_bytes = self.socket.recv()
                 frame = np.frombuffer(frame_bytes, dtype=self.dtype)
                 return frame.reshape(self.frame_shape)
-            except Exception as e:
-                logging.error(f"Error processing ZMQ frame: {e}")
-                return None
-        return None # No message received
+        except Exception as e:
+            logging.error(f"Error processing ZMQ frame: {e}")
+        return None
 
     def stop(self):
         if self.socket:
             logging.info("Closing ZMQ frame subscriber socket.")
             self.socket.close()
-        # The shared context is terminated in the main function's finally block
 
 class StanleyController:
     """Calculates steering angle using the Stanley control method."""
@@ -310,76 +261,135 @@ class Visualizer:
         return image
 
 # -------------------------------------------------------------------
-# --- 3. MAIN EXECUTION
+# --- 3. MANAGED NODE IMPLEMENTATION
 # -------------------------------------------------------------------
 
-def main():
-    setup_logging()
-    config = load_config()
-    keyboard = KeyboardInput()
+class LineFollowingNode(ManagedNode):
+    """
+    A managed node for running the line following vision pipeline.
+    """
+    def __init__(self, node_name: str, config_path: str = 'linedetection.yaml'):
+        super().__init__(node_name)
+        self.config_path = config_path
+        self.config = None
+        self.camera = None
+        self.lane_detector = None
+        self.visualizer = None
+        self.pub_socket = None
+        self.result_writer = None
+        
+        # Threading control for the processing loop
+        self.processing_thread = None
+        self.active_event = threading.Event()
 
-    use_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
-    logging.info(f"CUDA Available: {use_cuda}. {'Using GPU.' if use_cuda else 'Running on CPU.'}")
+    def on_configure(self) -> bool:
+        """Load configuration and initialize all components."""
+        self.logger.info("Configuring Line Following Node...")
+        try:
+            self.config = load_config(self.config_path)
+            cam_config = self.config['camera']
+            zmq_config = self.config['zmq']
 
-    # Create a single ZMQ context for the entire application
-    context = zmq.Context()
+            # Use the ZMQ context from the parent ManagedNode class
+            self.pub_socket = self.context.socket(zmq.PUB)
+            self.pub_socket.bind(zmq_config['pub_steer_url'])
+            
+            # Note: The ZMQ Camera needs a context. It will use the one from ManagedNode.
+            source_type = cam_config.get('source_type', '').lower()
+            if source_type == 'realsense':
+                self.camera = RealSenseCamera(cam_config)
+            elif source_type == 'opencv':
+                self.camera = OpenCVCamera(cam_config, source=cam_config.get('opencv_source'))
+            elif source_type == 'zmq':
+                self.camera = ZMQCamera(cam_config, zmq_config, self.context)
+            else:
+                self.logger.error(f"Invalid camera source_type: {source_type}")
+                return False
 
-    # --- Camera and ZMQ Setup ---
-    cam_config = config['camera']
-    zmq_config = config['zmq']
+            use_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
+            self.logger.info(f"CUDA Available: {use_cuda}. {'Using GPU.' if use_cuda else 'Running on CPU.'}")
 
-    camera = None
-    source_type = cam_config.get('source_type', '').lower()
+            self.lane_detector = LaneDetector(self.config, use_cuda)
+            self.visualizer = Visualizer()
+            
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            self.result_writer = cv2.VideoWriter(
+                cam_config['video_output_file'], fourcc, cam_config['frame_fps'],
+                (cam_config['frame_width'] * 2, cam_config['frame_height'])
+            )
+            self.logger.info("Configuration successful.")
+            return True
+        except Exception as e:
+            self.logger.exception(f"Error during configuration: {e}")
+            return False
 
-    if source_type == 'realsense':
-        camera = RealSenseCamera(cam_config)
-    elif source_type == 'opencv':
-        camera = OpenCVCamera(cam_config, source=cam_config.get('opencv_source'))
-    elif source_type == 'zmq':
-        # Pass the shared context to the ZMQCamera
-        camera = ZMQCamera(cam_config, zmq_config, context)
-    else:
-        raise ValueError(f"Invalid or missing camera source_type in config: {source_type}")
+    def on_activate(self) -> bool:
+        """Start the camera and the processing loop."""
+        self.logger.info("Activating Node...")
+        try:
+            self.camera.start()
+            self.active_event.set() # Signal the processing loop to run
+            self.processing_thread = threading.Thread(target=self._processing_loop, name=f"{self.node_name}_ProcessingThread")
+            self.processing_thread.start()
+            self.logger.info("Node activated.")
+            return True
+        except Exception as e:
+            self.logger.exception(f"Error during activation: {e}")
+            return False
 
-    # Setup steering command publisher using the shared context
-    pub_socket = context.socket(zmq.PUB)
-    pub_socket.bind(zmq_config['pub_steer_url'])
-    logging.info(f"Publishing lane assist angles on {zmq_config['pub_steer_url']}")
+    def on_deactivate(self) -> bool:
+        """Stop the processing loop and the camera."""
+        self.logger.info("Deactivating Node...")
+        try:
+            self.active_event.clear() # Signal the processing loop to stop
+            if self.processing_thread:
+                self.processing_thread.join(timeout=2.0)
+            if self.camera:
+                self.camera.stop()
+            self.logger.info("Node deactivated.")
+            return True
+        except Exception as e:
+            self.logger.exception(f"Error during deactivation: {e}")
+            return False
 
-    lane_detector = LaneDetector(config, use_cuda)
-    visualizer = Visualizer()
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    result_writer = cv2.VideoWriter(
-        cam_config['video_output_file'], fourcc, cam_config['frame_fps'],
-        (cam_config['frame_width'] * 2, cam_config['frame_height'])
-    )
-    logging.info(f"Video output will be saved to {cam_config['video_output_file']}")
-    count = 0
-
-    try:
-        camera.start()
-        logging.info("Starting main loop. Press 'q' to quit.")
+    def on_shutdown(self) -> bool:
+        """Release all resources."""
+        self.logger.info("Shutting down Node...")
+        # Ensure deactivation sequence is called first
+        if self.state == "active":
+            self.on_deactivate()
+            
+        try:
+            if self.result_writer:
+                self.result_writer.release()
+            if self.pub_socket:
+                self.pub_socket.close()
+            cv2.destroyAllWindows()
+            # The parent run() method handles context termination
+            self.logger.info("Shutdown successful.")
+            return True
+        except Exception as e:
+            self.logger.exception(f"Error during shutdown: {e}")
+            return False
+            
+    def _processing_loop(self):
+        """The main loop for frame processing and command publishing."""
         start_time = time.time()
+        frame_count = 0
+        cam_config = self.config['camera']
+        zmq_config = self.config['zmq']
+        sc_config = self.config['stanley_controller']
 
-        while True:
-            frame = camera.get_frame()
+        while self.active_event.is_set() and not self.shutdown_event.is_set():
+            frame = self.camera.get_frame()
             if frame is None:
-                # For ZMQ, this just means no message arrived; for others, it's end of stream
-                if source_type != 'zmq':
-                    logging.info("End of video stream or camera error.")
-                    break
-                # If ZMQ, just wait for the next frame without erroring out
-                key = keyboard.get_key()
-                if key == 'q':
-                    logging.info("'q' pressed in console, shutting down.")
-                    break
-                time.sleep(0.01) # Avoid busy-waiting
+                # In some cases (e.g., ZMQ), this is normal. Avoid busy-waiting.
+                time.sleep(0.01)
                 continue
+            
+            # --- Core processing logic ---
+            lane_data = self.lane_detector.process_frame(frame)
 
-            lane_data = lane_detector.process_frame(frame)
-
-            sc_config = config['stanley_controller']
             steering_angle_rad = StanleyController.calculate_steering(
                 lane_data['cross_track_error'],
                 lane_data['heading_error'],
@@ -388,47 +398,49 @@ def main():
                 sc_config['speed_epsilon']
             )
             steering_angle_deg = math.degrees(steering_angle_rad)
-            count += 1
 
+            # --- Publish steering command ---
             command = steering_command_pb2.SteeringCommand()
             command.auto_steer_angle = steering_angle_deg
             serialized_command = command.SerializeToString()
-            pub_socket.send_string(zmq_config['steer_topic'], flags=zmq.SNDMORE)
-            pub_socket.send(serialized_command)
-            logging.debug(f"Published steering angle: {steering_angle_deg:.2f} degrees")
+            self.pub_socket.send_string(zmq_config['steer_topic'], flags=zmq.SNDMORE)
+            self.pub_socket.send(serialized_command)
 
+            # --- Visualization ---
             warped_view = lane_data.get('warped_image', np.zeros_like(frame))
-            annotated_warped = visualizer.draw_pipeline_data(warped_view, lane_data, steering_angle_rad)
-
+            annotated_warped = self.visualizer.draw_pipeline_data(warped_view, lane_data, steering_angle_rad)
             stacked_output = np.hstack((frame, annotated_warped))
-            if cam_config['use_display']:
+            
+            if cam_config.get('use_display', False):
                 cv2.imshow('Lane Following View', stacked_output)
-
-            # Check for 'q' key press in display window OR console
-            key = keyboard.get_key()
-            if (cam_config['use_display'] and cv2.waitKey(1) & 0xFF == ord('q')) or key == 'q':
-                logging.info("'q' pressed, shutting down.")
-                break
-
-            result_writer.write(stacked_output)
-
-            if count > 0 and count % 30 == 0:
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.logger.info("'q' pressed in display window, initiating shutdown.")
+                    self.shutdown_event.set() # Signal main run loop to exit
+                    break
+            
+            self.result_writer.write(stacked_output)
+            
+            frame_count += 1
+            if frame_count % 30 == 0:
                 elapsed_time = time.time() - start_time
-                fps = count / elapsed_time
-                logging.info(f"Current Processing FPS: {fps:.2f}")
+                fps = frame_count / elapsed_time
+                self.logger.info(f"Processing FPS: {fps:.2f}")
+        
+        self.logger.info("Processing loop terminated.")
 
-    except Exception as e:
-        logging.exception("An unhandled error occurred in the main loop:")
-    finally:
-        print("\n")
-        logging.info("Shutting down...")
-        if camera:
-            camera.stop()
-        result_writer.release()
-        cv2.destroyAllWindows()
-        pub_socket.close()
-        context.term() # Terminate the single, shared context
-        logging.info("Shutdown complete.")
+
+# -------------------------------------------------------------------
+# --- 4. MAIN EXECUTION
+# -------------------------------------------------------------------
+
+def main():
+    """
+    Main entry point: Creates and runs the LineFollowingNode.
+    """
+    setup_logging()
+    # The node name should be unique in the orchestrated system
+    line_follower = LineFollowingNode(node_name="line_follower_node")
+    line_follower.run()
 
 if __name__ == "__main__":
     main()
