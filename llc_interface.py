@@ -34,7 +34,7 @@ FUNC_INCOMING_DATA = 0x11
 DOWNSAMPLE_RATE = 10  # Hz, the rate commands will be sent to the vehicle
 
 BRAKE_RAMP_RATE = 5  # Brake force percentage increase per second
-MAX_BRAKE_FORCE = 20 # Maximum brake force percentage
+MAX_BRAKE_FORCE = 40 # Maximum brake force percentage
 
 # --- Thread-safe object to store the latest command (Unchanged from original) ---
 class LatestCommand:
@@ -60,7 +60,7 @@ class LatestCommand:
             
             self.steer_angle = new_steer_angle
             self.speed_rpm = new_speed_rpm
-            self.speed_rpm = max(-100.0, min(500.0, self.speed_rpm))
+            # self.speed_rpm = max(-500.0, min(500.0, self.speed_rpm))
             self.steer_angle = max(-120.0, min(90.0, self.steer_angle))
 
     def get_command(self):
@@ -111,6 +111,7 @@ def parse_stream_data(bytes_received, logger):
 # Note: shutdown_event is now passed from the ManagedNode instance
 def serial_io_thread(ser, read_queue, send_queue, shutdown_event, logger):
     logger.info("Serial I/O thread started.")
+    logger.info(f"type of ser: {type(ser)}")
     while not shutdown_event.is_set():
         try:
             if ser.in_waiting > 0:
@@ -124,6 +125,7 @@ def serial_io_thread(ser, read_queue, send_queue, shutdown_event, logger):
                                 read_queue.put(parsed_info)
             try:
                 packet_to_send = send_queue.get_nowait()
+                logger.info(f"packet sent: {hex(int.from_bytes(packet_to_send, 'big'))}")
                 ser.write(packet_to_send)
                 send_queue.task_done()
             except Empty:
@@ -146,6 +148,7 @@ def command_subscriber(latest_command, context, shutdown_event, logger):
             if socket.poll(100):
                 topic, command_json = socket.recv_multipart()
                 command = json.loads(command_json)
+                logger.info(f"Received command: {command}")
                 latest_command.set_command(command)
                 if time.time() - last_print_time > 0.25:
                     logger.debug(f"Received command: {command}")
@@ -165,29 +168,43 @@ def control_sender_thread(latest_command, send_queue, shutdown_event, logger):
             current_speed_rpm, current_steer_angle, time_stopped = latest_command.get_command()
             steer_packet = create_packet(FUNC_STEER, '<b', int(current_steer_angle))
             send_queue.put(steer_packet)
+            logger.info(f"SENT > Steer: {current_steer_angle:<3.0f} deg")
+            logger.info(f"SENT > Speed: {current_speed_rpm:<3.0f} rpm")
             brake_force_to_log = 0
+            logger.info(f"Current speed: {current_speed_rpm}, Steer angle: {current_steer_angle}")
             if current_speed_rpm != 0:
                 if last_brake_force > 0:
-                    send_queue.put(create_packet(FUNC_BRAKE, '<B', 0))
+                    speed_packet = create_packet(FUNC_DRIVE, '>H', 0)
+                    send_queue.put(create_packet(FUNC_BRAKE, '>B', 0))
                     last_brake_force = 0
                 if current_speed_rpm > 0:
-                    speed_packet = create_packet(FUNC_DRIVE, '<h', int(current_speed_rpm * 10))
+                    speed_packet = create_packet(FUNC_DRIVE, '>H', int(current_speed_rpm))
+                    send_queue.put(create_packet(FUNC_BRAKE, '>B', 0))
+                    logger.info(f"sent speed: {speed_packet.hex()}")
                 else:
-                    speed_packet = create_packet(FUNC_REVERSE, '<h', int(abs(current_speed_rpm) * 10))
+                    speed_packet = create_packet(FUNC_REVERSE, '>H', int(abs(current_speed_rpm)))
+                    send_queue.put(create_packet(FUNC_BRAKE, '>B', 0))
+                    logger.info(f"sent speed: {speed_packet.hex()}")
                 send_queue.put(speed_packet)
             else:
                 if time_stopped is not None:
                     elapsed_time = time.time() - time_stopped
                     brake_force = min(MAX_BRAKE_FORCE, int(elapsed_time * BRAKE_RAMP_RATE))
-                    send_queue.put(create_packet(FUNC_BRAKE, '<B', brake_force))
+                    brake_packet = create_packet(FUNC_BRAKE, '>B', brake_force)
+                    send_queue.put(brake_packet)
+                    logger.info(f"sent speed: {brake_packet.hex()}")
                     last_brake_force = brake_force
                     brake_force_to_log = brake_force
                 else:
-                    send_queue.put(create_packet(FUNC_BRAKE, '<B', 5))
-                    last_brake_force = 5
-                    brake_force_to_log = 5
+                    brake_packet = create_packet(FUNC_BRAKE, '>B', 0)
+                    send_queue.put(brake_packet)
+                    logger.info(f"sent brake: {brake_packet.hex()}")
+                
+                speed_packet = create_packet(FUNC_DRIVE, '>H', 0)
+                send_queue.put(speed_packet)
+                logger.info(f"sent speed: {speed_packet.hex()}")
             logger.debug(f"SENT > Speed: {current_speed_rpm:<5.1f} RPM, Steer: {current_steer_angle:<3.0f}, Brake: {brake_force_to_log}%")
-            time.sleep(1.0 / DOWNSAMPLE_RATE)
+            time.sleep(0.2)
         except Exception as e:
             logger.error(f"Error in control sender: {e}", exc_info=True)
             shutdown_event.set()
@@ -251,7 +268,7 @@ class LLCInterfaceNode(ManagedNode):
         # Start the data stream from the vehicle
         self.send_queue.put(create_packet(FUNC_STOP_STREAM))
         time.sleep(0.1)
-        self.send_queue.put(create_packet(FUNC_START_STREAM))
+        # self.send_queue.put(create_packet(FUNC_START_STREAM))
         self.logger.info("Requested data stream start from vehicle.")
 
         # Create and start threads
@@ -290,6 +307,11 @@ class LLCInterfaceNode(ManagedNode):
         for t in self.threads:
             t.join(timeout=1.5)
         self.logger.info("All threads joined.")
+        # Ensure all logs are flushed and file handlers are closed
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+            handler.close()
+        logging.getLogger().handlers.clear()
         
         # Reset shutdown event in case we are reactivated later
         self.shutdown_event.clear()

@@ -21,9 +21,9 @@ ZMQ_SUB_URL = "ipc:///tmp/teleop_cmd.ipc"        # For subscribing to lane assis
 LANE_ASSIST_TOPIC = "lane_assist_angle"
 
 # --- Control Settings ---
-MAX_SPEED_RPM = 100.0
+MAX_SPEED_RPM = 1500.0
 MAX_STEER_ANGLE = 120.0
-SPEED_STEP = 5.0
+SPEED_STEP = 100.0
 STEER_STEP = 5.0
 
 # --- Function Definitions (getKey, save/restore_terminal_settings) ---

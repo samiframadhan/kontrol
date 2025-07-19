@@ -14,8 +14,8 @@ zmq:
 # Camera and Video Settings
 camera:
   # Choose source type: "realsense" for Intel RealSense or "opencv" for video files/other webcams.
-  source_type: "zmq"
-  opencv_source: "40derajat77cmcrosstrack_run.avi" # Path to video file or camera device index
+  source_type: "realsense"
+  # opencv_source: "realsense.mp4" # Path to video file or camera device index
   frame_width: 640
   frame_height: 480
   frame_fps: 30
@@ -25,12 +25,12 @@ camera:
 # Lane Detection Parameters
 lane_detection:
   # HSV color threshold for the lane lines (Yellow). Format: [Hue, Saturation, Value]
-  hsv_lower: [0, 120, 120]
+  hsv_lower: [10, 70, 120]
   hsv_upper: [40, 255, 255]
 
   # Geometric Transformation
   perspective_warp: 0.35      # Percentage of the frame width to create the trapezoidal perspective warp
-  min_contour_area: 100       # Minimum pixel area to be considered a valid lane segment
+  min_contour_area: 310       # Minimum pixel area to be considered a valid lane segment
   pixels_to_meters: 0.00725   # Conversion factor for calculating cross-track error in meters
   segments: 5                 # Number of horizontal segments to scan for lane points
 

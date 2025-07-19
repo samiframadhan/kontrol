@@ -15,7 +15,7 @@ class ArucoDetector:
         self.robot_to_camera_transform = self.load_robot_to_camera_transform("robot_camera_transform.yaml")
 
     @staticmethod
-    def load_robot_to_camera_transform(filename):
+    def load_robot_to_camera_transform(self, filename):
         fs = cv2.FileStorage(filename, cv2.FILE_STORAGE_READ)
         mat = fs.getNode("robot_to_camera").mat()
         fs.release()
