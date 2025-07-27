@@ -88,6 +88,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+data/**/*.png
+data/**/*.json
 
 # videos
 *.avi
