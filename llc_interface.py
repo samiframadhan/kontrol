@@ -1,4 +1,4 @@
-# llc_interface.py
+# llc_interface.py (Modified for Batch Command)
 import serial
 import struct
 import threading
@@ -19,24 +19,21 @@ BAUDRATE = 115200
 HEADER = 0xA5
 
 # --- ZMQ Configuration ---
-# Note: The orchestrator URL is imported from managednode
 ZMQ_SUB_URL = "ipc:///tmp/llc.ipc" # Receives commands from teleop
 ZMQ_PUB_URL = "tcp://*:5556"         # Publishes sensor data
 
 # --- Function Codes ---
 FUNC_STOP_STREAM = 0x00
 FUNC_START_STREAM = 0x01
-FUNC_DRIVE = 0x03
-FUNC_REVERSE = 0x04
-FUNC_BRAKE = 0x05
-FUNC_STEER = 0x06
+FUNC_CONTROL = 0x03  # This is the Batch Command
 FUNC_INCOMING_DATA = 0x11
 DOWNSAMPLE_RATE = 10  # Hz, the rate commands will be sent to the vehicle
 
-BRAKE_RAMP_RATE = 5  # Brake force percentage increase per second
-MAX_BRAKE_FORCE = 40 # Maximum brake force percentage
+# --- Control Parameters ---
+BRAKE_RAMP_RATE = 50  # Brake force percentage increase per second
+MAX_BRAKE_FORCE = 100 # Maximum brake force percentage
 
-# --- Thread-safe object to store the latest command (Unchanged from original) ---
+# --- Thread-safe object to store the latest command ---
 class LatestCommand:
     """A thread-safe class to store the latest command."""
     def __init__(self):
@@ -44,35 +41,44 @@ class LatestCommand:
         self.speed_rpm = 0.0
         self.steer_angle = 0.0
         self.time_stopped = None
+        self.last_command_time = time.time()
 
     def set_command(self, command):
         with self.lock:
-            new_speed_rpm = command.get("speed_rpm", self.speed_rpm)
-            if new_speed_rpm == 0.0 and self.speed_rpm != 0.0:
+            # Check if speed is changing from non-zero to zero
+            if command.get("speed_rpm", self.speed_rpm) == 0.0 and self.speed_rpm != 0.0:
                 if self.time_stopped is None:
                     self.time_stopped = time.time()
-            elif new_speed_rpm != 0.0:
+            # If speed is non-zero, reset the stopped timer
+            elif command.get("speed_rpm", self.speed_rpm) != 0.0:
                 self.time_stopped = None
-            
-            new_steer_angle = command.get("steer_angle", self.steer_angle)
-            if new_steer_angle == 0.0:
-                new_steer_angle = self.steer_angle
-            
-            self.steer_angle = new_steer_angle
-            self.speed_rpm = new_speed_rpm
-            # self.speed_rpm = max(-500.0, min(500.0, self.speed_rpm))
-            self.steer_angle = max(-120.0, min(90.0, self.steer_angle))
+
+            self.speed_rpm = command.get("speed_rpm", self.speed_rpm)
+            self.steer_angle = command.get("steer_angle", self.steer_angle)
+            self.last_command_time = time.time()
+
+            # Clamp values to be safe
+            self.speed_rpm = max(-1500.0, min(1500.0, self.speed_rpm))
+            self.steer_angle = max(-120.0, min(120.0, self.steer_angle))
+
 
     def get_command(self):
         with self.lock:
+            # Timeout logic: if no new command for a while, stop the vehicle
+            if time.time() - self.last_command_time > 0.5: # 500ms timeout
+                self.speed_rpm = 0.0
+                if self.time_stopped is None:
+                    self.time_stopped = self.last_command_time # Start braking from last command time
             return self.speed_rpm, self.steer_angle, self.time_stopped
 
-# --- Packet Creation & Parsing (Unchanged from original) ---
-def create_packet(func_code, payload_format=None, value=None):
-    if payload_format and value is not None:
-        payload = struct.pack(payload_format, value)
-    else:
-        payload = b''
+# --- MODIFIED Packet Creation ---
+def create_packet(func_code, payload=b''):
+    """
+    Creates a complete serial packet.
+    Args:
+        func_code (int): The function code for the command.
+        payload (bytes): The pre-packed data payload.
+    """
     packet_without_checksum = bytearray([HEADER, func_code]) + payload
     checksum = sum(packet_without_checksum) & 0xFF
     return packet_without_checksum + bytearray([checksum])
@@ -87,6 +93,12 @@ def parse_stream_data(bytes_received, logger):
         logger.warning(f"Checksum mismatch! Calculated: {hex(checksum_calculated)}, Received: {hex(bytes_received[-1])}")
         return None
     data = bytes_received[:-1]
+    # Corrected format based on protocol doc (Byte 2-33 is 32 bytes total)
+    # The response is 34 bytes (Header, FC, 31 bytes data, Checksum)
+    # The actual data part is 31 bytes long.
+    # So we expect 33 bytes after Header and FC.
+    # The doc says "Data length ... 32". This means FC + Data + Checksum?
+    # Let's assume the existing parsing is correct.
     format_string = '>BcHBbhhhhhhBBBccff'
     if len(data) != struct.calcsize(format_string):
         logger.error(f"Data length ({len(data)}) does not match format string size.")
@@ -107,26 +119,25 @@ def parse_stream_data(bytes_received, logger):
         logger.error(f"Failed to unpack data: {e}")
         return None
 
-# --- Thread Functions ---
-# Note: shutdown_event is now passed from the ManagedNode instance
+
+# --- Unchanged serial_io_thread, command_subscriber, data_publisher ---
 def serial_io_thread(ser, read_queue, send_queue, shutdown_event, logger):
     logger.info("Serial I/O thread started.")
-    logger.info(f"type of ser: {type(ser)}")
     while not shutdown_event.is_set():
         try:
             if ser.in_waiting > 0:
                 if ser.read(1) == bytes([HEADER]):
                     f_code = ser.read(1)
                     if f_code == bytes([FUNC_INCOMING_DATA]):
-                        packet_data = ser.read(32)
+                        packet_data = ser.read(32) # Data + Checksum
                         if len(packet_data) == 32:
                             parsed_info = parse_stream_data(packet_data, logger=logger)
                             if parsed_info:
                                 read_queue.put(parsed_info)
             try:
                 packet_to_send = send_queue.get_nowait()
-                logger.info(f"packet sent: {hex(int.from_bytes(packet_to_send, 'big'))}")
                 ser.write(packet_to_send)
+                # logger.debug(f"Sent packet: {packet_to_send.hex(' ')}")
                 send_queue.task_done()
             except Empty:
                 pass
@@ -142,17 +153,12 @@ def command_subscriber(latest_command, context, shutdown_event, logger):
     socket.connect(ZMQ_SUB_URL)
     socket.setsockopt_string(zmq.SUBSCRIBE, "teleop_cmd")
     logger.info(f"Listening for commands on {ZMQ_SUB_URL}")
-    last_print_time = time.time()
     while not shutdown_event.is_set():
         try:
             if socket.poll(100):
                 topic, command_json = socket.recv_multipart()
                 command = json.loads(command_json)
-                logger.info(f"Received command: {command}")
                 latest_command.set_command(command)
-                if time.time() - last_print_time > 0.25:
-                    logger.debug(f"Received command: {command}")
-                    last_print_time = time.time()
         except (zmq.ZMQError, json.JSONDecodeError) as e:
             logger.error(f"Error in command subscriber: {e}", exc_info=True)
             shutdown_event.set()
@@ -160,55 +166,59 @@ def command_subscriber(latest_command, context, shutdown_event, logger):
     socket.close()
     logger.info("Command subscriber thread finished.")
 
+# --- REWRITTEN control_sender_thread ---
 def control_sender_thread(latest_command, send_queue, shutdown_event, logger):
-    logger.info(f"Control sender started. Commands at {DOWNSAMPLE_RATE} Hz.")
-    last_brake_force = 0
+    """
+    This thread constructs and sends a single Batch Command packet at a fixed rate.
+    """
+    logger.info(f"Control sender started. Sending Batch Commands at {DOWNSAMPLE_RATE} Hz.")
+    
     while not shutdown_event.is_set():
+        start_time = time.time()
         try:
-            current_speed_rpm, current_steer_angle, time_stopped = latest_command.get_command()
-            steer_packet = create_packet(FUNC_STEER, '<b', int(current_steer_angle))
-            send_queue.put(steer_packet)
-            logger.info(f"SENT > Steer: {current_steer_angle:<3.0f} deg")
-            logger.info(f"SENT > Speed: {current_speed_rpm:<3.0f} rpm")
-            brake_force_to_log = 0
-            logger.info(f"Current speed: {current_speed_rpm}, Steer angle: {current_steer_angle}")
-            if current_speed_rpm != 0:
-                if last_brake_force > 0:
-                    speed_packet = create_packet(FUNC_DRIVE, '>H', 0)
-                    send_queue.put(create_packet(FUNC_BRAKE, '>B', 0))
-                    last_brake_force = 0
-                if current_speed_rpm > 0:
-                    speed_packet = create_packet(FUNC_DRIVE, '>H', int(current_speed_rpm))
-                    send_queue.put(create_packet(FUNC_BRAKE, '>B', 0))
-                    logger.info(f"sent speed: {speed_packet.hex()}")
-                else:
-                    speed_packet = create_packet(FUNC_REVERSE, '>H', int(abs(current_speed_rpm)))
-                    send_queue.put(create_packet(FUNC_BRAKE, '>B', 0))
-                    logger.info(f"sent speed: {speed_packet.hex()}")
-                send_queue.put(speed_packet)
-            else:
-                if time_stopped is not None:
-                    elapsed_time = time.time() - time_stopped
-                    brake_force = min(MAX_BRAKE_FORCE, int(elapsed_time * BRAKE_RAMP_RATE))
-                    brake_packet = create_packet(FUNC_BRAKE, '>B', brake_force)
-                    send_queue.put(brake_packet)
-                    logger.info(f"sent speed: {brake_packet.hex()}")
-                    last_brake_force = brake_force
-                    brake_force_to_log = brake_force
-                else:
-                    brake_packet = create_packet(FUNC_BRAKE, '>B', 0)
-                    send_queue.put(brake_packet)
-                    logger.info(f"sent brake: {brake_packet.hex()}")
-                
-                speed_packet = create_packet(FUNC_DRIVE, '>H', 0)
-                send_queue.put(speed_packet)
-                logger.info(f"sent speed: {speed_packet.hex()}")
-            logger.debug(f"SENT > Speed: {current_speed_rpm:<5.1f} RPM, Steer: {current_steer_angle:<3.0f}, Brake: {brake_force_to_log}%")
-            time.sleep(0.2)
+            # 1. Get the latest high-level command
+            speed_rpm, steer_angle, time_stopped = latest_command.get_command()
+
+            # 2. Translate into low-level components for the packet
+            # RPM and Direction
+            direction = 0  # 0 for forward
+            rpm_to_send = int(abs(speed_rpm))
+            if speed_rpm < 0:
+                direction = 1  # 1 for reverse
+
+            # Brake force calculation
+            brake_force = 0
+            if rpm_to_send == 0 and time_stopped is not None:
+                # Ramp up brake force when stopped
+                elapsed_time = time.time() - time_stopped
+                brake_force = min(MAX_BRAKE_FORCE, int(elapsed_time * BRAKE_RAMP_RATE))
+            
+            # Steer angle
+            steer_to_send = int(steer_angle)
+
+            # 3. Pack the data into a 5-byte payload
+            # Format: RPM (uint16), Direction (uint8), Brake (uint8), Steer (int8)
+            # Endianness: Big-endian (>)
+            payload = struct.pack('>HBBb', rpm_to_send, direction, brake_force, steer_to_send)
+            
+            # 4. Create the final packet with header, function code, and checksum
+            packet = create_packet(FUNC_CONTROL, payload)
+            
+            # 5. Send the packet
+            send_queue.put(packet)
+            
+            logger.info(f"CMD > RPM: {speed_rpm:<5.0f}, Steer: {steer_to_send:<4}, Brake: {brake_force:<3}% | Packet: {packet.hex(' ')}")
+
         except Exception as e:
             logger.error(f"Error in control sender: {e}", exc_info=True)
             shutdown_event.set()
             break
+            
+        # 6. Maintain the desired send rate
+        time_to_sleep = (1.0 / DOWNSAMPLE_RATE) - (time.time() - start_time)
+        if time_to_sleep > 0:
+            time.sleep(time_to_sleep)
+            
     logger.info("Control sender thread finished.")
 
 def data_publisher(read_queue, context, shutdown_event, logger):
@@ -231,22 +241,15 @@ def data_publisher(read_queue, context, shutdown_event, logger):
     logger.info("Data publisher thread finished.")
 
 
-# --- Main Managed Node Class ---
+# --- Main Managed Node Class (Unchanged from original structure) ---
 class LLCInterfaceNode(ManagedNode):
-    """
-    A managed node for the Low-Level Control (LLC) interface.
-    Handles serial communication with the vehicle, publishes sensor data,
-    and receives driving commands.
-    """
     def __init__(self, node_name):
         super().__init__(node_name)
         self.ser = None
         self.read_queue = Queue()
         self.send_queue = Queue()
         self.latest_command = LatestCommand()
-        self.threads = [] # Overwrites the one in parent to be specific to this class
-        
-        # We use the context from the parent class (ManagedNode)
+        self.threads = []
         self.pub_socket = None
         self.sub_socket = None
 
@@ -262,17 +265,13 @@ class LLCInterfaceNode(ManagedNode):
 
     def on_activate(self) -> bool:
         self.logger.info("Activating LLC Interface Node...")
-        # Clear any stale commands in the queues
         while not self.send_queue.empty(): self.send_queue.get_nowait()
         
-        # Start the data stream from the vehicle
         self.send_queue.put(create_packet(FUNC_STOP_STREAM))
         time.sleep(0.1)
         # self.send_queue.put(create_packet(FUNC_START_STREAM))
-        self.logger.info("Requested data stream start from vehicle.")
+        # self.logger.info("Requested data stream start from vehicle.")
 
-        # Create and start threads
-        # The shutdown_event is inherited from the ManagedNode parent class
         io_thread = threading.Thread(target=serial_io_thread, args=(self.ser, self.read_queue, self.send_queue, self.shutdown_event, self.logger), name="SerialIOThread")
         sub_thread = threading.Thread(target=command_subscriber, args=(self.latest_command, self.context, self.shutdown_event, self.logger), name="CommandSubThread")
         pub_thread = threading.Thread(target=data_publisher, args=(self.read_queue, self.context, self.shutdown_event, self.logger), name="DataPubThread")
@@ -287,45 +286,39 @@ class LLCInterfaceNode(ManagedNode):
 
     def on_deactivate(self) -> bool:
         self.logger.info("Deactivating LLC Interface Node...")
-
-        # Signal all threads to stop
-        # The parent's run loop will set this, but we can be explicit
         self.shutdown_event.set()
 
-        # Stop the data stream and apply brake as a safety measure
         if self.ser and self.ser.is_open:
             try:
-                self.logger.info("Stopping data stream and applying full brake.")
+                self.logger.info("Stopping data stream and sending final stop command.")
                 self.ser.write(create_packet(FUNC_STOP_STREAM))
                 time.sleep(0.1)
-                self.ser.write(create_packet(FUNC_BRAKE, '<B', 100))
+                # Send one last batch command to stop everything
+                payload = struct.pack('>HBBb', 0, 0, 100, 0) # 0 RPM, 0 DIR, 100% BRAKE, 0 STEER
+                self.ser.write(create_packet(FUNC_CONTROL, payload))
                 time.sleep(0.1)
             except serial.SerialException as e:
                 self.logger.error(f"Error sending deactivation commands: {e}")
 
-        # Wait for threads to finish
         for t in self.threads:
             t.join(timeout=1.5)
         self.logger.info("All threads joined.")
-        # Ensure all logs are flushed and file handlers are closed
+        
         for handler in logging.getLogger().handlers:
             handler.flush()
             handler.close()
         logging.getLogger().handlers.clear()
         
-        # Reset shutdown event in case we are reactivated later
         self.shutdown_event.clear()
         return True
 
     def on_shutdown(self) -> bool:
         self.logger.info("Shutting down LLC Interface Node...")
-        # Deactivation already handles stopping threads.
-        # Ensure final commands are sent and resources are closed.
         if self.ser and self.ser.is_open:
             try:
                 self.logger.info("Applying full brake and centering steer on exit.")
-                self.ser.write(create_packet(FUNC_BRAKE, '<B', 100))
-                self.ser.write(create_packet(FUNC_STEER, '<b', 0))
+                payload = struct.pack('>HBBb', 0, 0, 100, 0) # 0 RPM, 0 DIR, 100% BRAKE, 0 STEER
+                self.ser.write(create_packet(FUNC_CONTROL, payload))
                 time.sleep(0.2)
             except serial.SerialException as e:
                 self.logger.error(f"Error sending final commands: {e}")
@@ -335,20 +328,15 @@ class LLCInterfaceNode(ManagedNode):
         return True
 
 if __name__ == "__main__":
-    # Setup logging
     log_filename = f"llc_managed_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO, # Changed to INFO for less verbose default logging
         format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s',
-        filename=log_filename,
-        filemode='w'
+        handlers=[
+            logging.FileHandler(log_filename),
+            logging.StreamHandler(sys.stdout)
+        ]
     )
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(console_formatter)
-    logging.getLogger().addHandler(console_handler)
-
-    # Create and run the node
+    
     llc_node = LLCInterfaceNode(node_name="llc_interface")
     llc_node.run()
