@@ -183,6 +183,7 @@ def control_sender_thread(latest_command, send_queue, shutdown_event, logger):
 
             # 4. Create the final packet with header, function code, and checksum
             packet = create_packet(FUNC_CONTROL, payload)
+            logger.debug(f"Created packet: {packet.hex(' ')}")
 
             # 5. Send the packet
             send_queue.put(packet)
