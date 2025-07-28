@@ -327,7 +327,6 @@ class LineFollowingNode(ManagedNode):
             frame = self.camera.get_frame()
             if frame is None:
                 # In some cases (e.g., ZMQ), this is normal. Avoid busy-waiting.
-                time.sleep(0.01)
                 continue
             
             # --- Core processing logic ---

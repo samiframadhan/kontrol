@@ -5,6 +5,7 @@ import threading
 import time
 import logging
 from abc import ABC, abstractmethod
+from shared_enums import NodeState, MessageType
 
 # --- Configuration ---
 ORCHESTRATOR_URL = "tcp://localhost:5559"
@@ -31,7 +32,7 @@ class ManagedNode(ABC):
             node_name: A unique name for this node (e.g., 'camera', 'llc_interface').
         """
         self.node_name = node_name
-        self.state = "unconfigured"
+        self.state = NodeState.UNCONFIGURED
         self.logger = logging.getLogger(self.node_name)
 
         self.context = zmq.Context()
@@ -49,44 +50,24 @@ class ManagedNode(ABC):
     # --- Abstract methods to be implemented by child classes ---
     @abstractmethod
     def on_configure(self) -> bool:
-        """
-        Load configuration, initialize resources (but don't start processing).
-        This is called when the orchestrator sends a 'CONFIGURE' command.
-        Return True on success, False on failure.
-        """
         pass
 
     @abstractmethod
     def on_activate(self) -> bool:
-        """
-        Start the main processing loop of the node (e.g., publishing data).
-        This is called when the orchestrator sends an 'ACTIVATE' command.
-        Return True on success, False on failure.
-        """
         pass
 
     @abstractmethod
     def on_deactivate(self) -> bool:
-        """
-        Pause the main processing loop, but keep resources allocated.
-        This is called when the orchestrator sends a 'DEACTIVATE' command.
-        Return True on success, False on failure.
-        """
         pass
 
     @abstractmethod
     def on_shutdown(self) -> bool:
-        """
-        Release all resources and prepare for termination.
-        This is called when the orchestrator sends a 'SHUTDOWN' command.
-        Return True on success, False on failure.
-        """
         pass
 
     # --- Core Lifecycle Management Logic ---
-    def _send_message(self, msg_type: str, data: dict = None):
+    def _send_message(self, msg_type: MessageType, data: dict = None):
         """Helper to send a JSON message to the orchestrator."""
-        message = {"type": msg_type, "node_name": self.node_name}
+        message = {"type": msg_type.value, "node_name": self.node_name}
         if data:
             message.update(data)
         try:
@@ -94,12 +75,12 @@ class ManagedNode(ABC):
         except zmq.Again:
             self.logger.warning("Could not send message to orchestrator, socket busy.")
 
-    def _update_state(self, new_state: str):
+    def _update_state(self, new_state: NodeState):
         """Updates the node's state and notifies the orchestrator."""
         if self.state != new_state:
             self.state = new_state
-            self.logger.info(f"Transitioned to state: {self.state}")
-            self._send_message("STATUS_UPDATE", {"state": self.state})
+            self.logger.info(f"Transitioned to state: {self.state.value}")
+            self._send_message(MessageType.STATUS_UPDATE, {"state": self.state.value})
 
     def _handle_command(self, command_msg: dict):
         """Processes a command received from the orchestrator."""
@@ -107,10 +88,10 @@ class ManagedNode(ABC):
         self.logger.debug(f"Received command: {command}")
 
         transitions = {
-            "CONFIGURE": ("unconfigured", self.on_configure, "inactive"),
-            "ACTIVATE": ("inactive", self.on_activate, "active"),
-            "DEACTIVATE": ("active", self.on_deactivate, "inactive"),
-            "SHUTDOWN": (None, self.on_shutdown, "shutdown") # Can shutdown from any state
+            "CONFIGURE": (NodeState.UNCONFIGURED, self.on_configure, NodeState.INACTIVE),
+            "ACTIVATE": (NodeState.INACTIVE, self.on_activate, NodeState.ACTIVE),
+            "DEACTIVATE": (NodeState.ACTIVE, self.on_deactivate, NodeState.INACTIVE),
+            "SHUTDOWN": (None, self.on_shutdown, NodeState.SHUTDOWN) # Can shutdown from any state
         }
 
         if command in transitions:
@@ -121,9 +102,9 @@ class ManagedNode(ABC):
                 else:
                     self.logger.error(f"Failed to execute action for command '{command}'")
             else:
-                self.logger.warning(f"Received command '{command}' while in wrong state '{self.state}'")
+                self.logger.warning(f"Received command '{command}' while in wrong state '{self.state.value}'")
 
-        if self.state == "shutdown":
+        if self.state == NodeState.SHUTDOWN:
             self.shutdown_event.set()
 
     def _command_loop(self):
@@ -138,23 +119,22 @@ class ManagedNode(ABC):
                 self.logger.error(f"ZMQ error in command loop: {e}")
                 break
             finally:
-                self.shutdown_event.set() if self.state == "shutdown" else None
+                if self.state == NodeState.SHUTDOWN:
+                    self.shutdown_event.set()
         self.logger.info("Command loop terminated.")
 
     def _heartbeat_loop(self):
         """Sends periodic heartbeats to the orchestrator."""
         while not self.shutdown_event.is_set():
-            self._send_message("HEARTBEAT")
+            self._send_message(MessageType.HEARTBEAT)
             self.shutdown_event.wait(HEARTBEAT_INTERVAL)
         self.logger.info("Heartbeat loop terminated.")
 
     def run(self):
         """The main entry point to start the node and its lifecycle management."""
         self.logger.info("Node is starting...")
-        # 1. Register with the orchestrator
-        self._send_message("REGISTER")
+        self._send_message(MessageType.REGISTER)
 
-        # 2. Start background threads for heartbeating and command listening
         cmd_thread = threading.Thread(target=self._command_loop, name=f"{self.node_name}_CmdThread", daemon=True)
         hb_thread = threading.Thread(target=self._heartbeat_loop, name=f"{self.node_name}_HbThread", daemon=True)
         self.threads.extend([cmd_thread, hb_thread])
@@ -162,15 +142,13 @@ class ManagedNode(ABC):
         hb_thread.start()
         self.logger.info("Lifecycle management threads started.")
 
-        # 3. Keep the main thread alive until shutdown is signaled
         try:
             self.shutdown_event.wait()
         except KeyboardInterrupt:
             self.logger.info("Keyboard interrupt received.")
         finally:
             self.logger.info("Shutdown initiated...")
-            self._update_state("shutdown")
-            # Give a moment for the final status update to be sent
+            self._update_state(NodeState.SHUTDOWN)
             time.sleep(0.5)
             self.shutdown_event.set()
             for thread in self.threads:

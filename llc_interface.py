@@ -10,8 +10,7 @@ import logging
 from datetime import datetime
 from queue import Queue, Empty
 
-# Assuming managednode.py is in the same directory or accessible via PYTHONPATH
-from managednode import ManagedNode, ORCHESTRATOR_URL
+from managednode import ManagedNode
 
 # --- Configuration ---
 SERIAL_PORT = '/dev/ttyACM0'  # Change this to your port
@@ -40,36 +39,27 @@ class LatestCommand:
         self.lock = threading.Lock()
         self.speed_rpm = 0.0
         self.steer_angle = 0.0
-        self.time_stopped = None
+        self.brake_force = 0 # New
         self.last_command_time = time.time()
 
     def set_command(self, command):
         with self.lock:
-            # Check if speed is changing from non-zero to zero
-            if command.get("speed_rpm", self.speed_rpm) == 0.0 and self.speed_rpm != 0.0:
-                if self.time_stopped is None:
-                    self.time_stopped = time.time()
-            # If speed is non-zero, reset the stopped timer
-            elif command.get("speed_rpm", self.speed_rpm) != 0.0:
-                self.time_stopped = None
-
             self.speed_rpm = command.get("speed_rpm", self.speed_rpm)
             self.steer_angle = command.get("steer_angle", self.steer_angle)
+            self.brake_force = command.get("brake_force", self.brake_force) # New
             self.last_command_time = time.time()
 
             # Clamp values to be safe
             self.speed_rpm = max(-1500.0, min(1500.0, self.speed_rpm))
             self.steer_angle = max(-120.0, min(120.0, self.steer_angle))
-
+            self.brake_force = max(0, min(100, self.brake_force)) # New
 
     def get_command(self):
         with self.lock:
-            # Timeout logic: if no new command for a while, stop the vehicle
             if time.time() - self.last_command_time > 0.5: # 500ms timeout
                 self.speed_rpm = 0.0
-                if self.time_stopped is None:
-                    self.time_stopped = self.last_command_time # Start braking from last command time
-            return self.speed_rpm, self.steer_angle, self.time_stopped
+                self.brake_force = 100 # Emergency brake
+            return self.speed_rpm, self.steer_angle, self.brake_force
 
 # --- MODIFIED Packet Creation ---
 def create_packet(func_code, payload=b''):
@@ -93,12 +83,6 @@ def parse_stream_data(bytes_received, logger):
         logger.warning(f"Checksum mismatch! Calculated: {hex(checksum_calculated)}, Received: {hex(bytes_received[-1])}")
         return None
     data = bytes_received[:-1]
-    # Corrected format based on protocol doc (Byte 2-33 is 32 bytes total)
-    # The response is 34 bytes (Header, FC, 31 bytes data, Checksum)
-    # The actual data part is 31 bytes long.
-    # So we expect 33 bytes after Header and FC.
-    # The doc says "Data length ... 32". This means FC + Data + Checksum?
-    # Let's assume the existing parsing is correct.
     format_string = '>BcHBbhhhhhhBBBccff'
     if len(data) != struct.calcsize(format_string):
         logger.error(f"Data length ({len(data)}) does not match format string size.")
@@ -172,12 +156,12 @@ def control_sender_thread(latest_command, send_queue, shutdown_event, logger):
     This thread constructs and sends a single Batch Command packet at a fixed rate.
     """
     logger.info(f"Control sender started. Sending Batch Commands at {DOWNSAMPLE_RATE} Hz.")
-    
+
     while not shutdown_event.is_set():
         start_time = time.time()
         try:
             # 1. Get the latest high-level command
-            speed_rpm, steer_angle, time_stopped = latest_command.get_command()
+            speed_rpm, steer_angle, brake_force = latest_command.get_command()
 
             # 2. Translate into low-level components for the packet
             # RPM and Direction
@@ -186,40 +170,37 @@ def control_sender_thread(latest_command, send_queue, shutdown_event, logger):
             if speed_rpm < 0:
                 direction = 1  # 1 for reverse
 
-            # Brake force calculation
-            brake_force = 0
-            if rpm_to_send == 0 and time_stopped is not None:
-                # Ramp up brake force when stopped
-                elapsed_time = time.time() - time_stopped
-                brake_force = min(MAX_BRAKE_FORCE, int(elapsed_time * BRAKE_RAMP_RATE))
-            
             # Steer angle
             steer_to_send = int(steer_angle)
+
+            # Brake force is now directly commanded
+            brake_to_send = int(brake_force)
 
             # 3. Pack the data into a 5-byte payload
             # Format: RPM (uint16), Direction (uint8), Brake (uint8), Steer (int8)
             # Endianness: Big-endian (>)
-            payload = struct.pack('>HBBb', rpm_to_send, direction, brake_force, steer_to_send)
-            
+            payload = struct.pack('>HBBb', rpm_to_send, direction, brake_to_send, steer_to_send)
+
             # 4. Create the final packet with header, function code, and checksum
             packet = create_packet(FUNC_CONTROL, payload)
-            
+
             # 5. Send the packet
             send_queue.put(packet)
-            
-            logger.info(f"CMD > RPM: {speed_rpm:<5.0f}, Steer: {steer_to_send:<4}, Brake: {brake_force:<3}% | Packet: {packet.hex(' ')}")
+
+            logger.info(f"CMD > RPM: {speed_rpm:<5.0f}, Steer: {steer_to_send:<4}, Brake: {brake_to_send:<3}% | Packet: {packet.hex(' ')}")
 
         except Exception as e:
             logger.error(f"Error in control sender: {e}", exc_info=True)
             shutdown_event.set()
             break
-            
+
         # 6. Maintain the desired send rate
         time_to_sleep = (1.0 / DOWNSAMPLE_RATE) - (time.time() - start_time)
         if time_to_sleep > 0:
             time.sleep(time_to_sleep)
-            
+
     logger.info("Control sender thread finished.")
+
 
 def data_publisher(read_queue, context, shutdown_event, logger):
     socket = context.socket(zmq.PUB)

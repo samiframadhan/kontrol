@@ -14,7 +14,7 @@ zmq:
 # Camera and Video Settings
 camera:
   # Choose source type: "realsense" for Intel RealSense or "opencv" for video files/other webcams.
-  source_type: "realsense"
+  source_type: "zmq"
   # opencv_source: "realsense.mp4" # Path to video file or camera device index
   frame_width: 640
   frame_height: 480
