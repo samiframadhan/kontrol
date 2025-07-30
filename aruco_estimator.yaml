@@ -1,0 +1,29 @@
+# aruco_estimator.yaml
+# Konfigurasi untuk Node Deteksi Jarak ArUco
+
+# Pengaturan untuk ZMQ
+zmq:
+  # Alamat untuk subscribe ke feed kamera dari camera.py
+  # HARUS SAMA dengan 'pub_frame_url' di camera.yaml
+  sub_frame_url: "tcp://localhost:5555"
+  # Topik frame yang di-subscribe
+  # HARUS SAMA dengan 'frame_topic' di camera.yaml
+  sub_frame_topic: "cam_frame"
+
+  # Alamat untuk publish data jarak ke control.py
+  pub_distance_url: "tcp://localhost:5556"
+  # Topik untuk data jarak
+  pub_distance_topic: "aruco_distance"
+
+# Pengaturan Kamera & Deteksi
+detection:
+  # PENTING: Nilai ini WAJIB SAMA dengan di camera.yaml
+  frame_width: 640
+  frame_height: 480
+
+  # Path ke file kalibrasi kamera
+  calibration_file: "calibrationc270.yaml"
+
+  # Parameter deteksi jarak
+  camera_height_m: 1.5
+  known_marker_width_m: 0.1
