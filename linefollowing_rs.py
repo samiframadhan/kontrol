@@ -47,8 +47,14 @@ class StanleyController:
     """Calculates steering angle using the Stanley control method."""
     @staticmethod
     def calculate_steering(cross_track_error, heading_error, speed, k, epsilon):
+        cross_track_error = -cross_track_error
+        # heading_error = -heading_error
         cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
         return heading_error + cross_track_term
+    @staticmethod
+    def calculate_speed(max_speed, cross_track_error, heading_error, kcte=0.5, khe=0.5):
+        speed = max_speed / (1 + kcte*abs(cross_track_error) + khe*abs(heading_error))
+        return speed
 
 class LaneDetector:
     """Handles the full CV pipeline to detect lane and calculate errors using GPU."""
@@ -77,9 +83,10 @@ class LaneDetector:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         centers = []
         min_area = self.ld_config['min_contour_area']
+        max_area = self.ld_config.get('max_contour_area', float('inf'))
         for contour in contours:
             M = cv2.moments(contour)
-            if M['m00'] > min_area:
+            if M['m00'] > min_area and M['m00'] < max_area:
                 cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
                 centers.append({'x': cx, 'y': cy, 'area': M['m00']})
@@ -339,11 +346,21 @@ class LineFollowingNode(ManagedNode):
                 sc_config['gain'],
                 sc_config['speed_epsilon']
             )
+            steering_angle_rad = -steering_angle_rad
             steering_angle_deg = math.degrees(steering_angle_rad)
+
+            # speed = StanleyController.calculate_speed(
+            #     sc_config['max_speed'],
+            #     lane_data['cross_track_error'],
+            #     lane_data['heading_error'],
+            #     sc_config['kcte'],
+            #     sc_config['khe']
+            # )
 
             # --- Publish steering command ---
             command = steering_command_pb2.SteeringCommand()
             command.auto_steer_angle = steering_angle_deg
+            # command.speed = speed
             serialized_command = command.SerializeToString()
             self.pub_socket.send_string(zmq_config['steer_topic'], flags=zmq.SNDMORE)
             self.pub_socket.send(serialized_command)
