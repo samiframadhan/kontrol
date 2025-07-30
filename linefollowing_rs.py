@@ -47,7 +47,7 @@ class StanleyController:
     """Calculates steering angle using the Stanley control method."""
     @staticmethod
     def calculate_steering(cross_track_error, heading_error, speed, k, epsilon):
-        cross_track_error = -cross_track_error
+        # cross_track_error = -cross_track_error
         # heading_error = -heading_error
         cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
         return heading_error + cross_track_term
@@ -346,7 +346,7 @@ class LineFollowingNode(ManagedNode):
                 sc_config['gain'],
                 sc_config['speed_epsilon']
             )
-            steering_angle_rad = -steering_angle_rad
+            # steering_angle_rad = -steering_angle_rad
             steering_angle_deg = math.degrees(steering_angle_rad)
 
             # speed = StanleyController.calculate_speed(
