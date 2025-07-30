@@ -7,7 +7,7 @@ from managednode import ManagedNode
 
 # Configuration
 COM_PORT = '/dev/ttyTHS1'  # Example for Jetson Nano, change as needed
-BAUD_RATE = 9600
+BAUD_RATE = 115200
 ZMQ_PUB_URL = "ipc:///tmp/hmi_commands.ipc"
 HMI_TOPIC = "hmi_cmd"
 

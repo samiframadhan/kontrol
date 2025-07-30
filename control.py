@@ -39,9 +39,9 @@ class ControlNode(ManagedNode):
     def on_configure(self) -> bool:
         self.logger.info("Configuring Control Node...")
         try:
-            # self.hmi_sub = self.context.socket(zmq.SUB)
-            # self.hmi_sub.connect(ZMQ_HMI_SUB_URL)
-            # self.hmi_sub.setsockopt_string(zmq.SUBSCRIBE, HMI_TOPIC)
+            self.hmi_sub = self.context.socket(zmq.SUB)
+            self.hmi_sub.connect(ZMQ_HMI_SUB_URL)
+            self.hmi_sub.setsockopt_string(zmq.SUBSCRIBE, HMI_TOPIC)
 
             self.steer_sub = self.context.socket(zmq.SUB)
             self.steer_sub.connect(ZMQ_STEER_SUB_URL)
@@ -77,37 +77,33 @@ class ControlNode(ManagedNode):
         self.logger.info("Shutting down Control Node...")
         if self.state == "active":
             self.on_deactivate()
-        # if self.hmi_sub: self.hmi_sub.close()
+        if self.hmi_sub: self.hmi_sub.close()
         if self.steer_sub: self.steer_sub.close()
         if self.llc_pub: self.llc_pub.close()
         return True
 
     def _control_loop(self):
         self.logger.info("Control loop started.")
-        self.is_running = True
-        self.time_stopped = None
-        self.time_started = time.time() # Add this line
-        self.logger.info("START command received. Vehicle moving.")
         while self.active_event.is_set():
             socks = dict(self.control_poller.poll(100))
 
-            # if self.hmi_sub in socks:
-            #     topic, msg = self.hmi_sub.recv_multipart()
-            #     command = msg.decode('utf-8')
-                # self.is_running = True
-                # self.time_stopped = None
-                # self.time_started = time.time() # Add this line
-                # self.logger.info("START command received. Vehicle moving.")
-                # if command == "START" and not self.is_running:
-                #     self.is_running = True
-                #     self.time_stopped = None
-                #     self.time_started = time.time() # Add this line
-                #     self.logger.info("START command received. Vehicle moving.")
-                # elif command == "STOP" and self.is_running:
-                #     self.is_running = False
-                #     self.time_stopped = time.time()
-                #     self.time_started = None # Add this line
-                #     self.logger.info("STOP command received. Vehicle stopping.")
+            if self.hmi_sub in socks:
+                topic, msg = self.hmi_sub.recv_multipart()
+                command = msg.decode('utf-8')
+                self.is_running = True
+                self.time_stopped = None
+                self.time_started = time.time() # Add this line
+                self.logger.info("START command received. Vehicle moving.")
+                if command == "START" and not self.is_running:
+                    self.is_running = True
+                    self.time_stopped = None
+                    self.time_started = time.time() # Add this line
+                    self.logger.info("START command received. Vehicle moving.")
+                elif command == "STOP" and self.is_running:
+                    self.is_running = False
+                    self.time_stopped = time.time()
+                    self.time_started = None # Add this line
+                    self.logger.info("STOP command received. Vehicle stopping.")
 
             if self.steer_sub in socks:
                 topic, serialized_data = self.steer_sub.recv_multipart()

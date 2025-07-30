@@ -1,6 +1,9 @@
-opencv-python
-opencv-contrib-python
+#opencv-python
+#opencv-contrib-python
 numpy
 pyyaml
-# pyrealsense2
+pyrealsense2
 pyzmq
+#curses
+protobuf
+pyserial
