@@ -32,8 +32,10 @@ class RealSenseCamera(Camera):
         self.pipeline = rs.pipeline()
         self.rs_config = rs.config()
         self.rs_config.enable_stream(rs.stream.color, self.config['frame_width'], self.config['frame_height'], rs.format.bgr8, self.config['frame_fps'])
+        
     def start(self):
         logging.info("Starting RealSense camera...")
+        
         self.pipeline.start(self.rs_config)
     def get_frame(self):
         frames = self.pipeline.wait_for_frames()

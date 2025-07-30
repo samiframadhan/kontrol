@@ -5,7 +5,7 @@ camera:
   # Source can be a camera index (e.g., 0, 1) or a path to a video file
   # e.g., "C:/Users/YourUser/Videos/my_lane_video.mp4"
   # e.g., "/home/user/videos/my_lane_video.mp4"
-  source: "realsense.mp4"
+  source: "tests/rec282025.mp4"
   frame_width: 640
   frame_height: 480
   frame_fps: 30

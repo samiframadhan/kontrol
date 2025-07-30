@@ -3,7 +3,7 @@ import numpy as np
 
 # Create a VideoCapture object and read from input file
 # If the input is the camera, pass 0 instead of the video file name
-cap = cv2.VideoCapture('./realsense.mp4')
+cap = cv2.VideoCapture('./rec2920251.mp4')
 
 # Check if camera opened successfully
 if (cap.isOpened()== False):

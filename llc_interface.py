@@ -143,6 +143,7 @@ def command_subscriber(latest_command, context, shutdown_event, logger):
                 topic, command_json = socket.recv_multipart()
                 command = json.loads(command_json)
                 latest_command.set_command(command)
+                logger.info(f"Received command: {command}")
         except (zmq.ZMQError, json.JSONDecodeError) as e:
             logger.error(f"Error in command subscriber: {e}", exc_info=True)
             shutdown_event.set()
@@ -251,8 +252,8 @@ class LLCInterfaceNode(ManagedNode):
         
         self.send_queue.put(create_packet(FUNC_STOP_STREAM))
         time.sleep(0.1)
-        # self.send_queue.put(create_packet(FUNC_START_STREAM))
-        # self.logger.info("Requested data stream start from vehicle.")
+        self.send_queue.put(create_packet(FUNC_START_STREAM))
+        self.logger.info("Requested data stream start from vehicle.")
 
         io_thread = threading.Thread(target=serial_io_thread, args=(self.ser, self.read_queue, self.send_queue, self.shutdown_event, self.logger), name="SerialIOThread")
         sub_thread = threading.Thread(target=command_subscriber, args=(self.latest_command, self.context, self.shutdown_event, self.logger), name="CommandSubThread")
