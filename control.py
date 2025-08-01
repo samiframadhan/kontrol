@@ -30,6 +30,7 @@ class ControlNode(ManagedNode):
         self.control_poller = zmq.Poller()
 
         self.is_running = False
+        self.is_reverse = False
         self.current_speed_rpm = 0.0
         self.current_steer_angle = 0.0
         self.time_stopped = None
@@ -52,7 +53,7 @@ class ControlNode(ManagedNode):
             self.llc_pub = self.context.socket(zmq.PUB)
             self.llc_pub.bind(ZMQ_LLC_PUB_URL)
 
-            # self.control_poller.register(self.hmi_sub, zmq.POLLIN)
+            self.control_poller.register(self.hmi_sub, zmq.POLLIN)
             self.control_poller.register(self.steer_sub, zmq.POLLIN)
             return True
         except zmq.ZMQError as e:
@@ -92,20 +93,21 @@ class ControlNode(ManagedNode):
             if self.hmi_sub in socks:
                 topic, msg = self.hmi_sub.recv_multipart()
                 command = msg.decode('utf-8')
-                self.is_running = True
-                self.time_stopped = None
-                self.time_started = time.time() # Add this line
-                self.logger.info("START command received. Vehicle moving.")
+                
                 if command == "START" and not self.is_running:
                     self.is_running = True
                     self.time_stopped = None
-                    self.time_started = time.time() # Add this line
+                    self.time_started = time.time() 
                     self.logger.info("START command received. Vehicle moving.")
                 elif command == "STOP" and self.is_running:
                     self.is_running = False
                     self.time_stopped = time.time()
-                    self.time_started = None # Add this line
+                    self.time_started = None 
                     self.logger.info("STOP command received. Vehicle stopping.")
+                elif "REV" in command:
+                    rev_state = bool(int(command[3]))
+                    self.logger.info(f"Reverse is {'on' if rev_state else 'off'} from HMI.")
+                    self.is_reverse = rev_state
 
             if self.steer_sub in socks:
                 topic, serialized_data = self.steer_sub.recv_multipart()
@@ -113,20 +115,28 @@ class ControlNode(ManagedNode):
                 command = steering_command_pb2.SteeringCommand()
                 command.ParseFromString(serialized_data)
                 self.logger.info(f"Received steering command: {command.auto_steer_angle} degrees")
-                self.current_steer_angle = command.auto_steer_angle * -3.0
+                if not self.is_reverse:
+                    self.current_steer_angle = command.auto_steer_angle * -3.0
+                #TODO: Keep the steering angle adjustment in llc_interface (* -3.0)
+                #TODO: Stream camera overlay 
+
+            #TODO: Handle reverse steering and speed by subscribing to the reverse topic
 
             brake_force = 0
             if self.is_running:
                 if self.time_started is not None:
                     elapsed_time = time.time() - self.time_started
                     self.current_speed_rpm = min(MAX_SPEED_RPM, elapsed_time * SPEED_RAMP_RATE)
+                    if self.is_reverse:
+                        self.current_speed_rpm *= -1
+                    # TODO: Use v max from linefollowing_rs
+                    # TODO: Handle negative speed for reverse in llc_interface
             else:
                 self.current_speed_rpm = 0
                 if self.time_stopped is not None:
                     elapsed_time = time.time() - self.time_stopped
                     brake_force = min(MAX_BRAKE_FORCE, int(elapsed_time * BRAKE_RAMP_RATE))
 
-            # self._send_llc_command(0, self.current_steer_angle, 0)
             self._send_llc_command(self.current_speed_rpm, self.current_steer_angle, brake_force)
             time.sleep(0.02)
         self.logger.info("Control loop stopped.")
