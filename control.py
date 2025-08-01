@@ -10,9 +10,11 @@ import steering_command_pb2
 ZMQ_HMI_SUB_URL = "ipc:///tmp/hmi_commands.ipc"
 HMI_TOPIC = "hmi_cmd"
 ZMQ_STEER_SUB_URL = "ipc:///tmp/teleop_cmd.ipc"
+ZMQ_STEER_SUB_URL = "ipc:///tmp/teleop_cmd_reverse.ipc"
 LANE_ASSIST_TOPIC = "lane_assist_angle"
 ZMQ_LLC_PUB_URL = "ipc:///tmp/llc.ipc"
 LLC_TOPIC = "teleop_cmd"
+LLC_TOPIC_REVERSE = "teleop_cmd_reverse"
 
 MAX_SPEED_RPM = 1000.0
 SPEED_RAMP_RATE = 500  # RPM increase per second

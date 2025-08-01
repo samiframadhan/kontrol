@@ -1,0 +1,52 @@
+# linedetection.yaml
+# Configuration for the lane following script.
+
+# ZeroMQ Publisher Configuration
+zmq:
+  pub_steer_url: "ipc:///tmp/teleop_cmd_reverse.ipc"
+  steer_topic: "lane_assist_angle_reverse"
+  status_url: "ipc:///tmp/lane_assist_status_reverse.ipc"
+  status_topic: "lane_assist_status_reverse"
+  sub_frame_url: "ipc:///tmp/cam_frame_reverse.ipc"
+  sub_frame_topic: "cam_frame_reverse"
+  sub_sensors_url: "ipc:///tmp/sensors_reverse.ipc"
+  sub_sensors_topic: "sensor_data_reverse"
+
+
+# Camera and Video Settings
+camera:
+  # Choose source type: "realsense" for Intel RealSense or "opencv" for video files/other webcams.
+  source_type: "realsense"
+  # opencv_source: "tests/rec2920251.mp4" # Path to video file or camera device index
+  frame_width: 640
+  frame_height: 480
+  frame_fps: 30
+  video_output_file: 'result_31Julrev.mp4'
+  use_display: true # Set to false to disable the live OpenCV display window
+
+# Lane Detection Parameters
+lane_detection:
+  # HSV color threshold for the lane lines (Yellow). Format: [Hue, Saturation, Value]
+  # hsv_lower: [10, 70, 120]
+  # hsv_upper: [40, 255, 255]
+  hsv_lower: [0, 0, 230]
+  hsv_upper: [200, 20, 255]
+
+  # Geometric Transformation
+  perspective_warp: 0.35      # Percentage of the frame width to create the trapezoidal perspective warp
+  min_contour_area: 200       # Minimum pixel area to be considered a valid lane segment
+  max_contour_area: 550     # Maximum pixel area to be considered a valid lane segment
+  pixels_to_meters: 0.00725   # Conversion factor for calculating cross-track error in meters
+  segments: 5                 # Number of horizontal segments to scan for lane points
+
+# Stanley Controller Parameters
+stanley_controller:
+  gain: 0.5                     # Proportional gain (k) for the cross-track error term
+  speed_epsilon: 0.000001         # Small value to prevent division by zero at low speeds
+  assumed_speed_for_calc: 1.0     # Assumed constant speed (m/s) for the controller calculations
+  max_speed: 1.0                 # Maximum speed (m/s) for the vehicle
+  kcte: 0.5                      # Gain for cross-track error term in speed calculation
+  khe: 0.5                       # Gain for heading error term in speed calculation
+
+vehicle_params:
+  rpm_to_mps_factor: 0.0015  # Conversion factor from RPM to meters per second
