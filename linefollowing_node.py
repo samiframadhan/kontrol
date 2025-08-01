@@ -1,4 +1,4 @@
-# linefollowing_rs.py (Refactored as a ManagedNode)
+# linefollowing_node.py
 import cv2
 import math
 import numpy as np
@@ -14,24 +14,7 @@ import steering_command_pb2
 
 # Assuming managed_node.py is in the same directory or accessible in the Python path
 from managednode import ManagedNode
-from camera import RealSenseCamera, OpenCVCamera, Camera, ZMQCamera
-
-# -------------------------------------------------------------------
-# --- 1. CONFIGURATION & LOGGING (Mostly unchanged)
-# -------------------------------------------------------------------
-
-def load_config(config_path='linedetection.yaml'):
-    """Loads configuration from a YAML file."""
-    logging.info(f"Loading configuration from {config_path}...")
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    ld_config = config['lane_detection']
-    ld_config['hsv_lower_np'] = np.array(ld_config['hsv_lower'])
-    ld_config['hsv_upper_np'] = np.array(ld_config['hsv_upper'])
-    ld_config['hsv_lower_gpu_tuple'] = tuple(ld_config['hsv_lower'])
-    ld_config['hsv_upper_gpu_tuple'] = tuple(ld_config['hsv_upper'])
-    logging.info("Configuration loaded successfully.")
-    return config
+from camera import ZMQCamera
 
 def setup_logging():
     """Configures the logging for the application."""
@@ -39,22 +22,18 @@ def setup_logging():
     # but we can call this if specific formatting is desired.
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-# -------------------------------------------------------------------
-# --- 2. LANE DETECTION CLASSES
-# -------------------------------------------------------------------
-
 class StanleyController:
     """Calculates steering angle using the Stanley control method."""
     @staticmethod
-    def calculate_steering(cross_track_error, heading_error, speed, k, epsilon):
-        # cross_track_error = -cross_track_error
-        # heading_error = -heading_error
-        cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
-        return heading_error + cross_track_term
-    @staticmethod
-    def calculate_speed(max_speed, cross_track_error, heading_error, kcte=0.5, khe=0.5):
-        speed = max_speed / (1 + kcte*abs(cross_track_error) + khe*abs(heading_error))
-        return speed
+    def calculate_steering(cross_track_error, heading_error, speed, k, epsilon, is_reverse):
+        if is_reverse:
+            cross_track_error = -cross_track_error
+            # heading_error = -heading_error
+            cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
+            return -(heading_error + cross_track_term)
+        else:
+            cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
+            return heading_error + cross_track_term
 
 class LaneDetector:
     """Handles the full CV pipeline to detect lane and calculate errors using GPU."""
@@ -99,25 +78,14 @@ class LaneDetector:
         return cv2.bitwise_and(img, mask)
 
     def _calculate_perpendicular_error(self, m, b, H, W):
-        """
-        Calculates the perpendicular distance from the virtual axle center to the detected lane line.
-        This version accounts for the physical offset between the camera's view and the axle.
-        """
-        # --- MODIFICATION START ---
-        
-        # Get conversion and offset from config. Use .get() for safety if param is missing.
-        pixels_per_meter = 1.0 / self.ld_config.get('pixels_to_meters', 0.0035) # Meters to pixels
+        pixels_per_meter = 1.0 / self.ld_config.get('pixels_to_meters', 0.0035) 
         axle_offset_m = self.ld_config.get('axle_to_bottom_frame_m', 0.0)
         
-        # Calculate the vertical offset in pixels
         y_offset_pixels = int(axle_offset_m * pixels_per_meter)
         
-        # Define the virtual axle point on the bird's-eye view image
-        # This is our new reference point for all error calculations.
         virtual_axle_point = (W // 2, H - y_offset_pixels)
         
-        # Calculate the point on the detected lane line that is perpendicular to our virtual axle point
-        if abs(m) < 1e-6: # Avoid division by zero for horizontal lines
+        if abs(m) < 1e-6:
             x_int, y_int = virtual_axle_point[0], b
         else:
             perp_m = -1 / m
@@ -127,18 +95,13 @@ class LaneDetector:
             
         intersection_point = (int(x_int), int(y_int))
         
-        # Calculate the distance (error) in pixels
         error_pixels = math.hypot(x_int - virtual_axle_point[0], y_int - virtual_axle_point[1])
         
-        # Determine the sign of the error. Instead of checking the line's x-intercept at the
-        # image bottom (y=H), we check it at the virtual axle's y-coordinate.
         virtual_axle_y_coord = H - y_offset_pixels
         x_at_axle_line = (virtual_axle_y_coord - b) / m if abs(m) > 1e-6 else float('inf')
         
         if x_at_axle_line < W // 2:
             error_pixels = -error_pixels
-            
-        # --- MODIFICATION END ---
             
         return error_pixels, intersection_point
 
@@ -150,13 +113,13 @@ class LaneDetector:
             self.gpu_frame.upload(img)
             self.gpu_warped = cv2.cuda.warpPerspective(self.gpu_frame, M, (W, H), flags=cv2.INTER_LINEAR)
             self.gpu_hsv = cv2.cuda.cvtColor(self.gpu_warped, cv2.COLOR_BGR2HSV)
-            self.gpu_mask = cv2.cuda.inRange(self.gpu_hsv, self.ld_config['hsv_lower_gpu_tuple'], self.ld_config['hsv_upper_gpu_tuple'])
+            self.gpu_mask = cv2.cuda.inRange(self.gpu_hsv, tuple(self.ld_config['hsv_lower']), tuple(self.ld_config['hsv_upper']))
             mask_yellow = self.gpu_mask.download()
             img_warped = self.gpu_warped.download()
         else:
             img_warped = cv2.warpPerspective(img, M, (W, H), flags=cv2.INTER_LINEAR)
             hsv_img = cv2.cvtColor(img_warped, cv2.COLOR_BGR2HSV)
-            mask_yellow = cv2.inRange(hsv_img, self.ld_config['hsv_lower_np'], self.ld_config['hsv_upper_np'])
+            mask_yellow = cv2.inRange(hsv_img, np.array(self.ld_config['hsv_lower']), np.array(self.ld_config['hsv_upper']))
 
         all_contours, all_centers = [], []
         num_segments = self.ld_config['segments']
@@ -192,6 +155,7 @@ class LaneDetector:
 
         return pipeline_data
 
+
 class Visualizer:
     """Handles all OpenCV drawing operations."""
     def draw_pipeline_data(self, image, data, steering_angle):
@@ -210,9 +174,6 @@ class Visualizer:
         cv2.putText(image, f"Steer: {math.degrees(steering_angle):.1f} deg", (10, H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
         return image
 
-# -------------------------------------------------------------------
-# --- 3. MANAGED NODE IMPLEMENTATION
-# -------------------------------------------------------------------
 
 class LineFollowingNode(ManagedNode):
     """
@@ -226,9 +187,10 @@ class LineFollowingNode(ManagedNode):
         self.lane_detector = None
         self.visualizer = None
         self.pub_socket = None
+        self.hmi_sub_socket = None
         self.result_writer = None
+        self.is_reverse = False
         
-        # Threading control for the processing loop
         self.processing_thread = None
         self.active_event = threading.Event()
 
@@ -236,25 +198,20 @@ class LineFollowingNode(ManagedNode):
         """Load configuration and initialize all components."""
         self.logger.info("Configuring Line Following Node...")
         try:
-            self.config = load_config(self.config_path)
+            with open(self.config_path, 'r') as f:
+                self.config = yaml.safe_load(f)
+            
             cam_config = self.config['camera']
             zmq_config = self.config['zmq']
 
-            # Use the ZMQ context from the parent ManagedNode class
             self.pub_socket = self.context.socket(zmq.PUB)
             self.pub_socket.bind(zmq_config['pub_steer_url'])
             
-            # Note: The ZMQ Camera needs a context. It will use the one from ManagedNode.
-            source_type = cam_config.get('source_type', '').lower()
-            if source_type == 'realsense':
-                self.camera = RealSenseCamera(cam_config)
-            elif source_type == 'opencv':
-                self.camera = OpenCVCamera(cam_config, source=cam_config.get('opencv_source'))
-            elif source_type == 'zmq':
-                self.camera = ZMQCamera(cam_config, zmq_config, self.context)
-            else:
-                self.logger.error(f"Invalid camera source_type: {source_type}")
-                return False
+            self.hmi_sub_socket = self.context.socket(zmq.SUB)
+            self.hmi_sub_socket.connect(zmq_config['hmi_sub_url'])
+            self.hmi_sub_socket.setsockopt_string(zmq.SUBSCRIBE, zmq_config['hmi_direction_topic'])
+            
+            self.camera = ZMQCamera(cam_config, zmq_config, self.context)
 
             use_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
             self.logger.info(f"CUDA Available: {use_cuda}. {'Using GPU.' if use_cuda else 'Running on CPU.'}")
@@ -278,7 +235,7 @@ class LineFollowingNode(ManagedNode):
         self.logger.info("Activating Node...")
         try:
             self.camera.start()
-            self.active_event.set() # Signal the processing loop to run
+            self.active_event.set() 
             self.processing_thread = threading.Thread(target=self._processing_loop, name=f"{self.node_name}_ProcessingThread")
             self.processing_thread.start()
             self.logger.info("Node activated.")
@@ -288,10 +245,9 @@ class LineFollowingNode(ManagedNode):
             return False
 
     def on_deactivate(self) -> bool:
-        """Stop the processing loop and the camera."""
         self.logger.info("Deactivating Node...")
         try:
-            self.active_event.clear() # Signal the processing loop to stop
+            self.active_event.clear()
             if self.processing_thread:
                 self.processing_thread.join(timeout=2.0)
             if self.camera:
@@ -303,9 +259,7 @@ class LineFollowingNode(ManagedNode):
             return False
 
     def on_shutdown(self) -> bool:
-        """Release all resources."""
         self.logger.info("Shutting down Node...")
-        # Ensure deactivation sequence is called first
         if self.state == "active":
             self.on_deactivate()
             
@@ -314,8 +268,9 @@ class LineFollowingNode(ManagedNode):
                 self.result_writer.release()
             if self.pub_socket:
                 self.pub_socket.close()
+            if self.hmi_sub_socket:
+                self.hmi_sub_socket.close()
             cv2.destroyAllWindows()
-            # The parent run() method handles context termination
             self.logger.info("Shutdown successful.")
             return True
         except Exception as e:
@@ -323,20 +278,28 @@ class LineFollowingNode(ManagedNode):
             return False
             
     def _processing_loop(self):
-        """The main loop for frame processing and command publishing."""
         start_time = time.time()
         frame_count = 0
         cam_config = self.config['camera']
         zmq_config = self.config['zmq']
         sc_config = self.config['stanley_controller']
 
+        poller = zmq.Poller()
+        poller.register(self.hmi_sub_socket, zmq.POLLIN)
+        if self.camera.socket:
+            poller.register(self.camera.socket, zmq.POLLIN)
+
         while self.active_event.is_set() and not self.shutdown_event.is_set():
+            socks = dict(poller.poll(100))
+            if self.hmi_sub_socket in socks:
+                topic, msg = self.hmi_sub_socket.recv_multipart()
+                self.is_reverse = msg.decode('utf-8') == 'reverse'
+                self.logger.info(f"Direction updated to {'reverse' if self.is_reverse else 'forward'}")
+            
             frame = self.camera.get_frame()
             if frame is None:
-                # In some cases (e.g., ZMQ), this is normal. Avoid busy-waiting.
                 continue
             
-            # --- Core processing logic ---
             lane_data = self.lane_detector.process_frame(frame)
 
             steering_angle_rad = StanleyController.calculate_steering(
@@ -344,28 +307,17 @@ class LineFollowingNode(ManagedNode):
                 lane_data['heading_error'],
                 sc_config['assumed_speed_for_calc'],
                 sc_config['gain'],
-                sc_config['speed_epsilon']
+                sc_config['speed_epsilon'],
+                self.is_reverse
             )
-            # steering_angle_rad = -steering_angle_rad
             steering_angle_deg = math.degrees(steering_angle_rad)
 
-            # speed = StanleyController.calculate_speed(
-            #     sc_config['max_speed'],
-            #     lane_data['cross_track_error'],
-            #     lane_data['heading_error'],
-            #     sc_config['kcte'],
-            #     sc_config['khe']
-            # )
-
-            # --- Publish steering command ---
             command = steering_command_pb2.SteeringCommand()
             command.auto_steer_angle = steering_angle_deg
-            # command.speed = speed
             serialized_command = command.SerializeToString()
             self.pub_socket.send_string(zmq_config['steer_topic'], flags=zmq.SNDMORE)
             self.pub_socket.send(serialized_command)
 
-            # --- Visualization ---
             warped_view = lane_data.get('warped_image', np.zeros_like(frame))
             annotated_warped = self.visualizer.draw_pipeline_data(warped_view, lane_data, steering_angle_rad)
             stacked_output = np.hstack((frame, annotated_warped))
@@ -374,7 +326,7 @@ class LineFollowingNode(ManagedNode):
                 cv2.imshow('Lane Following View', stacked_output)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     self.logger.info("'q' pressed in display window, initiating shutdown.")
-                    self.shutdown_event.set() # Signal main run loop to exit
+                    self.shutdown_event.set()
                     break
             
             self.result_writer.write(stacked_output)
@@ -388,17 +340,9 @@ class LineFollowingNode(ManagedNode):
         self.logger.info("Processing loop terminated.")
 
 
-# -------------------------------------------------------------------
-# --- 4. MAIN EXECUTION
-# -------------------------------------------------------------------
-
 def main():
-    """
-    Main entry point: Creates and runs the LineFollowingNode.
-    """
     setup_logging()
-    # The node name should be unique in the orchestrated system
-    line_follower = LineFollowingNode(node_name="line_follower_node")
+    line_follower = LineFollowingNode(node_name="line_follower_node", config_path="linedetection.yaml")
     line_follower.run()
 
 if __name__ == "__main__":

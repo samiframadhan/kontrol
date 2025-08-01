@@ -2,18 +2,25 @@
 
 # --- Configuration ---
 VENV_NAME=".venv"
-PYTHON_NODES=(
+
+# List of standard nodes that run as a single instance
+STANDARD_PYTHON_NODES=(
     "aruco.py"
-    "camera.py"
-    "camera_reverse.py"
     "control.py"
     "hmi_node.py"
-    "linefollowing_rs.py"
-    "linefollowing_rs_reverse.py"
+    "linefollowing_node.py" # Corrected name for the consolidated node
     "llc_interface.py"
     "orchestrator.py"
 )
-# System services are stored here
+
+# Special handling for the camera node, which runs as multiple instances
+CAMERA_SCRIPT="camera.py"
+CAMERA_CONFIGS=(
+    "camera.yaml"
+    "camera_reverse.yaml"
+)
+
+# --- Boilerplate ---
 SERVICE_FILES_DIR="/etc/systemd/system"
 PROJECT_DIR=$(pwd)
 
@@ -26,8 +33,6 @@ if [[ $EUID -ne 0 ]]; then
 fi
 echo "✅ Sudo permissions confirmed."
 echo
-
-# Determine the user who is running the script with sudo
 RUN_AS_USER=${SUDO_USER:-$(whoami)}
 RUN_AS_GROUP=$(id -gn "$RUN_AS_USER")
 echo "Script will install services to run as user: $RUN_AS_USER"
@@ -39,17 +44,14 @@ if [ -d "$VENV_NAME" ]; then
     echo "✅ Virtual environment '$VENV_NAME' already exists. Skipping creation."
 else
     echo "--- Creating virtual environment: $VENV_NAME ---"
-    # Create the venv as the original user, not as root
     sudo -u "$RUN_AS_USER" python3 -m venv "$VENV_NAME" --system-site-packages
     echo "✅ Virtual environment created."
 fi
-# Ensure correct ownership of the venv directory
 chown -R "$RUN_AS_USER":"$RUN_AS_GROUP" "$VENV_NAME"
 echo
 
 # --- 2. Install Requirements ---
 echo "--- Installing required modules from requirements.txt ---"
-# Activate the venv to install packages
 source "$VENV_NAME/bin/activate"
 pip install -r requirements.txt
 deactivate
@@ -59,51 +61,72 @@ echo
 # --- 3. Create and Enable Systemd Services ---
 echo "--- Creating and enabling systemd services ---"
 
-for node_script in "${PYTHON_NODES[@]}"; do
+# --- Create services for standard nodes ---
+for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
     service_name="${node_script%.py}.service"
     service_file_path="$SERVICE_FILES_DIR/$service_name"
     venv_python_path="$PROJECT_DIR/$VENV_NAME/bin/python"
     script_path="$PROJECT_DIR/$node_script"
 
     echo "Creating service file: $service_file_path"
-
-    # Create the service file using tee to write with sudo
     tee "$service_file_path" > /dev/null << EOL
 [Unit]
-Description=Service for ${node_script}
-# Start after the network is available
+Description=Kontrol Service for ${node_script}
 After=network.target
 
 [Service]
-# Run the script as the user who invoked sudo
 User=$RUN_AS_USER
 Group=$RUN_AS_GROUP
-
-# Set the working directory to the project folder
 WorkingDirectory=$PROJECT_DIR
-
-# Command to execute the python script using the virtual environment
 ExecStart=$venv_python_path $script_path
-
-# Restart the service automatically if it fails
 Restart=on-failure
 RestartSec=5
 
 [Install]
-# Make the service start at boot in a multi-user environment
 WantedBy=multi-user.target
 EOL
+done
 
+# --- Create services for camera node instances ---
+for config_file in "${CAMERA_CONFIGS[@]}"; do
+    service_name="camera_${config_file%.yaml}.service"
+    service_file_path="$SERVICE_FILES_DIR/$service_name"
+    venv_python_path="$PROJECT_DIR/$VENV_NAME/bin/python"
+    script_path="$PROJECT_DIR/$CAMERA_SCRIPT"
+
+    echo "Creating service file: $service_file_path"
+    tee "$service_file_path" > /dev/null << EOL
+[Unit]
+Description=Kontrol Camera Service for ${config_file}
+After=network.target
+
+[Service]
+User=$RUN_AS_USER
+Group=$RUN_AS_GROUP
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$venv_python_path $script_path --config ${config_file}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOL
 done
 
 echo
 echo "Reloading systemd daemon and enabling services..."
-# Reload systemd to recognize the new services
 systemctl daemon-reload
 
-# Enable each service to start on boot
-for node_script in "${PYTHON_NODES[@]}"; do
-    service_name="${node_script%.py}.service"
+# --- Enable all created services ---
+ALL_SERVICES=()
+for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
+    ALL_SERVICES+=("${node_script%.py}.service")
+done
+for config_file in "${CAMERA_CONFIGS[@]}"; do
+    ALL_SERVICES+=("camera_${config_file%.yaml}.service")
+done
+
+for service_name in "${ALL_SERVICES[@]}"; do
     systemctl enable "$service_name"
 done
 echo "✅ Services enabled."
@@ -112,13 +135,13 @@ echo
 # --- 4. Final Instructions ---
 echo "--- 🎉 Installation Complete! ---"
 echo
-echo "The services have been created and enabled to run automatically on boot."
-echo "You can start them immediately without rebooting by running:"
-echo
-for node_script in "${PYTHON_NODES[@]}"; do
-    service_name="${node_script%.py}.service"
-    echo "   sudo systemctl start $service_name"
+echo "The following services have been created and enabled to run on boot:"
+for service_name in "${ALL_SERVICES[@]}"; do
+    echo "  - ${service_name}"
 done
+echo
+echo "You can start them immediately without rebooting, for example:"
+echo "   sudo systemctl start orchestrator.service"
 echo
 echo "-> To check the status of a service: sudo systemctl status <service_name>"
 echo "-> To view live logs: sudo journalctl -u <service_name> -f"

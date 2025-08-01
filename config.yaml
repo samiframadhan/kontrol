@@ -1,0 +1,55 @@
+# config.yaml
+# Unified configuration for the autonomous driving system
+
+camera:
+  # This config is for the forward camera
+  forward:
+    camera_source: "realsense"
+    device_name: "Intel RealSense D435"
+    frame_width: 640
+    frame_height: 480
+    frame_fps: 30
+    video_output_file: 'forward_view.mp4'
+    use_display: false
+  
+  # This config is for the reverse camera
+  reverse:
+    camera_source: "realsense"
+    device_name: "Intel RealSense D415"
+    frame_width: 640
+    frame_height: 480
+    frame_fps: 30
+    video_output_file: 'reverse_view.mp4'
+    use_display: false
+
+zmq:
+  # IPC URLs for communication
+  hmi_sub_url: "ipc:///tmp/hmi.ipc"
+  hmi_direction_topic: "hmi_direction"
+  
+  pub_steer_url: "ipc:///tmp/teleop_cmd.ipc"
+  steer_topic: "lane_assist_angle"
+  
+  sub_frame_url: "ipc:///tmp/cam_frame.ipc"
+  sub_frame_topic: "cam_frame"
+  
+  sub_frame_url_reverse: "ipc:///tmp/cam_frame_reverse.ipc"
+  sub_frame_topic_reverse: "cam_frame_reverse"
+
+
+lane_detection:
+  hsv_lower: [0, 0, 230]
+  hsv_upper: [200, 20, 255]
+  perspective_warp: 0.35
+  min_contour_area: 200
+  max_contour_area: 550
+  pixels_to_meters: 0.00725
+  segments: 5
+
+stanley_controller:
+  gain: 0.5
+  speed_epsilon: 0.000001
+  assumed_speed_for_calc: 1.0
+  max_speed: 1.0
+  kcte: 0.5
+  khe: 0.5

@@ -84,51 +84,12 @@ class OpenCVCamera(Camera):
             logging.info("Stopping OpenCV camera.")
             self.cap.release()
 
-class ZMQCamera(Camera):
-    """Camera implementation for a ZMQ subscription source."""
-    def __init__(self, cam_config: dict, zmq_sub_config: dict, context: zmq.Context):
-        self.config = cam_config
-        self.zmq_config = zmq_sub_config
-        self.context = context # Use a shared ZMQ context
-        self.socket = None
-        self.poller = None
-        self.frame_shape = (self.config['frame_height'], self.config['frame_width'], 3)
-        self.dtype = np.uint8
-
-    def start(self):
-        logging.info(f"Connecting to ZMQ frame publisher at {self.zmq_config['sub_frame_url']}...")
-        self.socket = self.context.socket(zmq.SUB)
-        self.socket.connect(self.zmq_config['sub_frame_url'])
-        self.socket.setsockopt_string(zmq.SUBSCRIBE, self.zmq_config['sub_frame_topic'])
-        self.poller = zmq.Poller()
-        self.poller.register(self.socket, zmq.POLLIN)
-        logging.info(f"Subscribed to frame topic: '{self.zmq_config['sub_frame_topic']}'")
-
-    def get_frame(self):
-        try:
-            # Poll with a timeout to avoid blocking indefinitely
-            socks = dict(self.poller.poll(100))
-            if self.socket in socks and socks[self.socket] == zmq.POLLIN:
-                topic = self.socket.recv_string()
-                frame_bytes = self.socket.recv()
-                frame = np.frombuffer(frame_bytes, dtype=self.dtype)
-                return frame.reshape(self.frame_shape)
-        except Exception as e:
-            logging.error(f"Error processing ZMQ frame: {e}")
-        return None
-
-    def stop(self):
-        if self.socket:
-            logging.info("Closing ZMQ frame subscriber socket.")
-            self.socket.close()
-
-
 class CameraNode(ManagedNode):
     """
     A managed node for capturing frames from a camera or video file
     and publishing them over a ZMQ PUB socket.
     """
-    def __init__(self, node_name: str, config_path: str = 'camera.yaml'):
+    def __init__(self, node_name: str, config_path: str):
         super().__init__(node_name)
         self.config_path = config_path
         self.config = None
@@ -141,7 +102,7 @@ class CameraNode(ManagedNode):
         """
         Loads configuration and sets up ZMQ resources.
         """
-        self.logger.info("Configuring Camera Node...")
+        self.logger.info(f"Configuring Camera Node with {self.config_path}...")
         try:
             with open(self.config_path, 'r') as f:
                 self.config = yaml.safe_load(f)
@@ -270,8 +231,14 @@ def main():
     """
     Main function to instantiate and run the CameraNode.
     """
-    # Note: Logging is configured within the ManagedNode base class now.
-    camera_node = CameraNode(node_name="camera_node", config_path="camera.yaml")
+    # This allows you to run two instances of the camera node with different configurations
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str, default='camera.yaml', help='Path to the camera configuration file.')
+    args = parser.parse_args()
+
+    node_name = "camera_node_" + args.config.replace('.yaml', '')
+    camera_node = CameraNode(node_name=node_name, config_path=args.config)
     camera_node.run()
 
 if __name__ == "__main__":

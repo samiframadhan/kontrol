@@ -8,10 +8,10 @@ from managednode import ManagedNode
 # Configuration
 COM_PORT = '/dev/ttyTHS1'  # Example for Jetson Nano, change as needed
 BAUD_RATE = 115200
-ZMQ_PUB_URL = "ipc:///tmp/hmi_commands.ipc"
-HMI_TOPIC = "hmi_cmd"
+ZMQ_PUB_URL = "ipc:///tmp/hmi.ipc"  # Unified IPC channel
+HMI_CMD_TOPIC = "hmi_cmd"
+HMI_DIRECTION_TOPIC = "hmi_direction"
 
-# TODO: Send data to HMI from llc_interface; Safety state, speed, steering angle, etc.
 
 class HMINode(ManagedNode):
     def __init__(self, node_name="hmi_node"):
@@ -20,6 +20,7 @@ class HMINode(ManagedNode):
         self.pub_socket = None
         self.processing_thread = None
         self.active_event = threading.Event()
+        self.is_reverse = False
 
     def on_configure(self) -> bool:
         self.logger.info("Configuring HMI Node...")
@@ -70,18 +71,20 @@ class HMINode(ManagedNode):
                     line = self.ser.readline().decode('utf-8').strip()
                     if "START" in line:
                         self.logger.info("Received START command from HMI.")
-                        self.pub_socket.send_string(HMI_TOPIC, flags=zmq.SNDMORE)
+                        self.pub_socket.send_string(HMI_CMD_TOPIC, flags=zmq.SNDMORE)
                         self.pub_socket.send_string("START")
                     elif "STOP" in line:
                         self.logger.info("Received STOP command from HMI.")
-                        self.pub_socket.send_string(HMI_TOPIC, flags=zmq.SNDMORE)
+                        self.pub_socket.send_string(HMI_CMD_TOPIC, flags=zmq.SNDMORE)
                         self.pub_socket.send_string("STOP")
                     elif "REV" in line:
                         if line[3].isdigit():
                             rev_state = int(line[3])
-                            self.logger.info(f"Reverse is {"on" if rev_state else "off"} from HMI.")
-                            self.pub_socket.send_string(HMI_TOPIC, flags=zmq.SNDMORE)
-                            self.pub_socket.send_string(line)
+                            self.is_reverse = bool(rev_state)
+                            direction = "reverse" if self.is_reverse else "forward"
+                            self.logger.info(f"Direction set to {direction} from HMI.")
+                            self.pub_socket.send_string(HMI_DIRECTION_TOPIC, flags=zmq.SNDMORE)
+                            self.pub_socket.send_string(direction)
                 except UnicodeDecodeError:
                     self.logger.warning("Received non-UTF-8 characters from serial port.")
             time.sleep(0.1)
