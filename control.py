@@ -10,8 +10,8 @@ import steering_command_pb2
 # --- Konfigurasi TCP ---
 ZMQ_HMI_SUB_URL = "tcp://localhost:5557"
 HMI_TOPIC = "hmi_cmd"
-# ZMQ_STEER_SUB_URL = "ipc:///tmp/teleop_cmd.ipc"
-# ZMQ_STEER_SUB_URL = "ipc:///tmp/teleop_cmd_reverse.ipc"
+ZMQ_STEER_SUB_URL = "ipc:///tmp/teleop_cmd.ipc"
+ZMQ_STEER_SUB_URL = "ipc:///tmp/teleop_cmd_reverse.ipc"
 LANE_ASSIST_TOPIC = "lane_assist_angle"
 ZMQ_LLC_PUB_URL = "tcp://localhost:5560"
 LLC_TOPIC = "teleop_cmd"
@@ -100,10 +100,6 @@ class ControlNode(ManagedNode):
 
     def _control_loop(self):
         self.logger.info("Control loop started.")
-        self.is_running = True
-        self.time_stopped = None
-        self.time_started = time.time() # Add this line
-        self.logger.info("START command received. Vehicle moving.")
         
         while self.active_event.is_set():
             socks = dict(self.control_poller.poll(100))
@@ -121,7 +117,6 @@ class ControlNode(ManagedNode):
                     self.time_stopped = time.time()
                     self.time_started = None # Add this line
                     self.logger.info("STOP command received. Vehicle stopping.")
-
                 elif "REV" in command:
                     rev_state = bool(int(command[3]))
                     self.logger.info(f"Reverse is {'on' if rev_state else 'off'} from HMI.")
@@ -151,7 +146,6 @@ class ControlNode(ManagedNode):
                 self.time_stopped = time.time()
                 self.time_started = None
                 self.logger.info(self.is_running)
-
 
             if self.steer_sub in socks:
                 topic, serialized_data = self.steer_sub.recv_multipart()
