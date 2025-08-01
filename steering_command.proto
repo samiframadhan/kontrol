@@ -3,4 +3,5 @@ syntax = "proto3";
 // Message to hold the autonomous steering command.
 message SteeringCommand {
   float auto_steer_angle = 1;
+  float speed = 2;
 }

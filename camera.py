@@ -31,12 +31,17 @@ class RealSenseCamera(Camera):
         self.config = cam_config
         self.pipeline = rs.pipeline()
         self.rs_config = rs.config()
-        self.rs_config.enable_stream(rs.stream.color, self.config['frame_width'], self.config['frame_height'], rs.format.bgr8, self.config['frame_fps'])
+        self.rs_ctx = rs.context()
         
     def start(self):
         logging.info("Starting RealSense camera...")
-        
+        for dev in self.rs_ctx.devices:
+            if self.config['device_name'] in dev.get_info(rs.camera_info.name):
+                self.rs_config.enable_device(dev.get_info(rs.camera_info.serial_number))
+                break
+        self.rs_config.enable_stream(rs.stream.color, self.config['frame_width'], self.config['frame_height'], rs.format.bgr8, self.config['frame_fps'])
         self.pipeline.start(self.rs_config)
+        
     def get_frame(self):
         frames = self.pipeline.wait_for_frames()
         color_frame = frames.get_color_frame()
@@ -151,10 +156,13 @@ class CameraNode(ManagedNode):
         camera_config = self.config.get('camera', {})
         source = camera_config.get('source', 0)
         
-        self.cap = cv2.VideoCapture(source)
-        if not self.cap.isOpened():
-            self.logger.error(f"Cannot open video source: {source}")
-            return False
+        if camera_config.get('camera_source') == 'realsense':
+            self.camera = RealSenseCamera(camera_config)
+            self.camera.start()
+        elif camera_config.get('camera_source') == 'opencv':
+            self.camera = OpenCVCamera(camera_config, source)
+            self.camera.start()
+        
 
         # Set camera properties
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, camera_config.get('frame_width', 640))
@@ -212,15 +220,17 @@ class CameraNode(ManagedNode):
         frame_width = camera_config.get('frame_width', 640)
         frame_height = camera_config.get('frame_height', 480)
         fps = camera_config.get('frame_fps', 30)
-        sleep_interval = 1.0 / fps
+        # sleep_interval = 1.0 / fps
         frame_topic = zmq_config.get('frame_topic', 'frame')
 
         self.logger.info(f"Publishing topic '{frame_topic}' at approximately {fps} FPS.")
         
         while self.publishing_active.is_set():
-            if not self.cap or not self.cap.isOpened():
-                self.logger.warning("Camera is not available. Stopping publish loop.")
+            frame = self.camera.get_frame()
+            if frame is None:
+                self.logger.warning("No frame received from camera. Stopping publishing loop.")
                 break
+
 
             ret, frame = self.cap.read()
             if not ret:
@@ -239,7 +249,7 @@ class CameraNode(ManagedNode):
                 self.logger.error(f"ZMQ error while sending frame: {e}")
                 break
 
-            time.sleep(sleep_interval)
+            # time.sleep(sleep_interval)
         
         self.logger.info("Publish loop has terminated.")
 

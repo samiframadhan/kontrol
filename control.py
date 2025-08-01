@@ -153,7 +153,7 @@ class ControlNode(ManagedNode):
                 command.ParseFromString(serialized_data)
                 self.logger.info(f"Received steering command: {command.auto_steer_angle} degrees")
                 if not self.is_reverse:
-                    self.current_steer_angle = command.auto_steer_angle * -3.0
+                    self.current_steer_angle = command.auto_steer_angle
                 #TODO: Keep the steering angle adjustment in llc_interface (* -3.0)
                 #TODO: Stream camera overlay 
 

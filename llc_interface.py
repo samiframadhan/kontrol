@@ -16,6 +16,7 @@ from managednode import ManagedNode
 SERIAL_PORT = '/dev/ttyACM0'  # Change this to your port
 BAUDRATE = 115200
 HEADER = 0xA5
+STEER_MULTIPLIER = -3.0
 
 # --- ZMQ Configuration ---
 ZMQ_SUB_URL = "ipc:///tmp/llc.ipc" # Receives commands from teleop
@@ -47,6 +48,7 @@ class LatestCommand:
             self.speed_rpm = command.get("speed_rpm", self.speed_rpm)
             self.steer_angle = command.get("steer_angle", self.steer_angle)
             self.brake_force = command.get("brake_force", self.brake_force) # New
+            self.steer_angle = self.steer_angle * STEER_MULTIPLIER
             self.last_command_time = time.time()
 
             # Clamp values to be safe
