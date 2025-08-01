@@ -76,6 +76,12 @@ class HMINode(ManagedNode):
                         self.logger.info("Received STOP command from HMI.")
                         self.pub_socket.send_string(HMI_TOPIC, flags=zmq.SNDMORE)
                         self.pub_socket.send_string("STOP")
+                    elif "REV" in line:
+                        if line[3].isdigit():
+                            rev_state = int(line[3])
+                            self.logger.info(f"Reverse is {"on" if rev_state else "off"} from HMI.")
+                            self.pub_socket.send_string(HMI_TOPIC, flags=zmq.SNDMORE)
+                            self.pub_socket.send_string(line)
                 except UnicodeDecodeError:
                     self.logger.warning("Received non-UTF-8 characters from serial port.")
             time.sleep(0.1)
