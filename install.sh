@@ -5,6 +5,7 @@ VENV_NAME=".venv"
 PYTHON_NODES=(
     "aruco.py"
     "camera.py"
+    "camera_reverse.py"
     "control.py"
     "hmi_node.py"
     "linefollowing_rs.py"
