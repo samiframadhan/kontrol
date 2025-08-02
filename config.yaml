@@ -24,17 +24,20 @@ camera:
 
 zmq:
   # IPC URLs for communication
-  hmi_sub_url: "ipc:///tmp/hmi.ipc"
+  hmi_url: "ipc:///tmp/hmi.ipc"
   hmi_direction_topic: "hmi_direction"
   
-  pub_steer_url: "ipc:///tmp/teleop_cmd.ipc"
+  steer_url: "ipc:///tmp/teleop_cmd.ipc"
   steer_topic: "lane_assist_angle"
   
-  sub_frame_url: "ipc:///tmp/cam_frame.ipc"
-  sub_frame_topic: "cam_frame"
+  frame_url: "ipc:///tmp/cam_frame.ipc"
+  frame_topic: "cam_frame"
   
-  sub_frame_url_reverse: "ipc:///tmp/cam_frame_reverse.ipc"
-  sub_frame_topic_reverse: "cam_frame_reverse"
+  frame_url_reverse: "ipc:///tmp/cam_frame_reverse.ipc"
+  frame_topic_reverse: "cam_frame_reverse"
+
+  sensor_url: "ipc:///tmp/sensor_data.ipc"
+  sensor_topic: "sensor_data"
 
 
 lane_detection:

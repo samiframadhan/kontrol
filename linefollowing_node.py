@@ -14,7 +14,7 @@ import steering_command_pb2
 
 # Assuming managed_node.py is in the same directory or accessible in the Python path
 from managednode import ManagedNode
-from camera import ZMQCamera
+from camera_node import ZMQCamera
 
 def setup_logging():
     """Configures the logging for the application."""
@@ -34,6 +34,18 @@ class StanleyController:
         else:
             cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
             return heading_error + cross_track_term
+    
+    def calculate_velocity(cross_track_error, heading_error, speed, k_cte, k_heading, is_reverse):
+        """
+        Calculate the desired velocity based on cross track error and heading error.
+        This is a placeholder; actual implementation may vary.
+        """
+        if is_reverse:
+            res = speed / (1 + k_cte * abs(cross_track_error) + k_heading * abs(heading_error))
+        else:
+            res = speed / (1 + k_cte * abs(cross_track_error) + k_heading * abs(heading_error))
+
+        return res
 
 class LaneDetector:
     """Handles the full CV pipeline to detect lane and calculate errors using GPU."""

@@ -11,11 +11,9 @@ import steering_command_pb2
 ZMQ_HMI_SUB_URL = "tcp://localhost:5557"
 HMI_TOPIC = "hmi_cmd"
 ZMQ_STEER_SUB_URL = "ipc:///tmp/teleop_cmd.ipc"
-ZMQ_STEER_SUB_URL = "ipc:///tmp/teleop_cmd_reverse.ipc"
 LANE_ASSIST_TOPIC = "lane_assist_angle"
 ZMQ_LLC_PUB_URL = "tcp://localhost:5560"
 LLC_TOPIC = "teleop_cmd"
-LLC_TOPIC_REVERSE = "teleop_cmd_reverse"
 ZMQ_DISTANCE_SUB_URL = "tcp://localhost:5556"
 DISTANCE_TOPIC = "aruco_distance"
 

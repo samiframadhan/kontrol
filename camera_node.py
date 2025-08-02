@@ -84,6 +84,44 @@ class OpenCVCamera(Camera):
             logging.info("Stopping OpenCV camera.")
             self.cap.release()
 
+class ZMQCamera(Camera):
+    """Camera implementation for a ZMQ subscription source."""
+    def __init__(self, cam_config: dict, zmq_sub_config: dict, context: zmq.Context):
+        self.config = cam_config
+        self.zmq_config = zmq_sub_config
+        self.context = context # Use a shared ZMQ context
+        self.socket = None
+        self.poller = None
+        self.frame_shape = (self.config['frame_height'], self.config['frame_width'], 3)
+        self.dtype = np.uint8
+
+    def start(self):
+        logging.info(f"Connecting to ZMQ frame publisher at {self.zmq_config['sub_frame_url']}...")
+        self.socket = self.context.socket(zmq.SUB)
+        self.socket.connect(self.zmq_config['sub_frame_url'])
+        self.socket.setsockopt_string(zmq.SUBSCRIBE, self.zmq_config['sub_frame_topic'])
+        self.poller = zmq.Poller()
+        self.poller.register(self.socket, zmq.POLLIN)
+        logging.info(f"Subscribed to frame topic: '{self.zmq_config['sub_frame_topic']}'")
+
+    def get_frame(self):
+        try:
+            # Poll with a timeout to avoid blocking indefinitely
+            socks = dict(self.poller.poll(100))
+            if self.socket in socks and socks[self.socket] == zmq.POLLIN:
+                topic = self.socket.recv_string()
+                frame_bytes = self.socket.recv()
+                frame = np.frombuffer(frame_bytes, dtype=self.dtype)
+                return frame.reshape(self.frame_shape)
+        except Exception as e:
+            logging.error(f"Error processing ZMQ frame: {e}")
+
+        return None
+
+    def stop(self):
+        if self.socket:
+            logging.info("Closing ZMQ frame subscriber socket.")
+            self.socket.close()
 class CameraNode(ManagedNode):
     """
     A managed node for capturing frames from a camera or video file
@@ -225,7 +263,6 @@ class CameraNode(ManagedNode):
                 break
         
         self.logger.info("Publish loop has terminated.")
-
 
 def main():
     """
