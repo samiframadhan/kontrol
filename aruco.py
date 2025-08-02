@@ -131,7 +131,7 @@ class ArucoEstimatorNode(ManagedNode, ConfigMixin):
                             self.camera_matrix, self.dist_coeffs
                         )
                         direct_dist = tvecs[0][0][2]
-                        cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+                        # cv2.aruco.drawDetectedMarkers(frame, corners, ids)
 
 
 
@@ -140,10 +140,10 @@ class ArucoEstimatorNode(ManagedNode, ConfigMixin):
                             self.distance_pub.send_string(self.get_zmq_topic('distance_topic'), flags=zmq.SNDMORE)
                             self.distance_pub.send_string(f"{ground_distance}")
 
-                            cv2.drawFrameAxes(frame, self.camera_matrix, self.dist_coeffs, rvecs[0], tvecs[0], 0.1)
-                            cv2.putText(frame, f"Jarak: {ground_distance:.2f} m", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                    cv2.imshow("Aruco Estimator - Visual Feed", frame)
-                    cv2.waitKey(1)
+                    #         cv2.drawFrameAxes(frame, self.camera_matrix, self.dist_coeffs, rvecs[0], tvecs[0], 0.1)
+                    #         cv2.putText(frame, f"Jarak: {ground_distance:.2f} m", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    # cv2.imshow("Aruco Estimator - Visual Feed", frame)
+                    # cv2.waitKey(1)
                 except zmq.Again:
                     continue
 

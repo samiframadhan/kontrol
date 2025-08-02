@@ -52,7 +52,7 @@ camera:
     frame_height: 480
     frame_fps: 30
     video_output_file: 'forward_view.mp4'
-    use_display: true
+    use_display: false
   
   forward:
     camera_source: "realsense"
@@ -63,7 +63,7 @@ camera:
     frame_height: 480
     frame_fps: 30
     video_output_file: 'reverse_view.mp4'
-    use_display: true
+    use_display: false
 
 # ArUco Detection Configuration
 aruco:
