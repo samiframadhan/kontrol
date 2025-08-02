@@ -6,13 +6,6 @@ import threading
 from managednode import ManagedNode
 from config_mixin import ConfigMixin
 
-# Configuration
-COM_PORT = '/dev/ttyTHS1'  # Example for Jetson Nano, change as needed
-BAUD_RATE = 115200
-ZMQ_PUB_URL = "ipc:///tmp/hmi.ipc"  # Unified IPC channel
-HMI_CMD_TOPIC = "hmi_cmd"
-HMI_DIRECTION_TOPIC = "hmi_direction"
-
 
 class HMINode(ManagedNode, ConfigMixin):
     def __init__(self, node_name="hmi_node", config_path="config.yaml"):
@@ -30,8 +23,8 @@ class HMINode(ManagedNode, ConfigMixin):
         try:
             hmi_config = self.get_section_config('hmi')
             
-            self.ser = serial.Serial(hmi_config['com_port'], hmi_config['baud_rate'], timeout=1)
-            self.logger.info(f"Successfully opened serial port {hmi_config['com_port']}")
+            self.ser = serial.Serial(hmi_config['serial_port'], hmi_config['baud_rate'], timeout=1)
+            self.logger.info(f"Successfully opened serial port {hmi_config['serial_port']}")
             
             self.pub_socket = self.context.socket(zmq.PUB)
             self.pub_socket.bind(self.get_zmq_url('hmi_cmd_url'))

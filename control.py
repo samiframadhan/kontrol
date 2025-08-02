@@ -39,6 +39,7 @@ class ControlNode(ManagedNode, ConfigMixin):
         self.is_reverse = False
         self.current_speed_rpm = 0.0
         self.current_steer_angle = 0.0
+        self.desired_speed_rpm = 0.0
         self.time_stopped = None
         self.time_started = None
         self.processing_thread = None
@@ -166,29 +167,23 @@ class ControlNode(ManagedNode, ConfigMixin):
                 topic, serialized_data = self.steer_sub.recv_multipart()
                 command = steering_command_pb2.SteeringCommand()
                 command.ParseFromString(serialized_data)
-                self.logger.info(f"Received steering command: {command.auto_steer_angle} degrees")
-                if not self.is_reverse:
-                    self.current_steer_angle = command.auto_steer_angle
-                #TODO: Keep the steering angle adjustment in llc_interface (* -3.0)
+                self.logger.info(f"Received steering command: {command.auto_steer_angle} degrees; speed: {command.desired_velocity_rpm} RPM")
+                self.current_steer_angle = command.auto_steer_angle
+                self.desired_speed_rpm = command.desired_velocity_rpm
                 #TODO: Stream camera overlay 
-
-            #TODO: Handle reverse steering and speed by subscribing to the reverse topic
 
             brake_force = 0
             if self.is_running:
                 if self.time_started is not None:
                     elapsed_time = time.time() - self.time_started
-                    self.current_speed_rpm = min(MAX_SPEED_RPM, elapsed_time * SPEED_RAMP_RATE)
+                    self.current_speed_rpm = min(self.desired_speed_rpm, elapsed_time * SPEED_RAMP_RATE)
                     if self.is_reverse:
                         self.current_speed_rpm *= -1
-                    # TODO: Use v max from linefollowing_rs
-                    # TODO: Handle negative speed for reverse in llc_interface
             else:
                 self.current_speed_rpm = 0
                 if self.time_stopped is not None:
                     elapsed_time = time.time() - self.time_stopped
                     brake_force = min(MAX_BRAKE_FORCE, int(elapsed_time * BRAKE_RAMP_RATE))
-            # self._send_llc_command(0, self.current_steer_angle, 0)
 
             self._send_llc_command(self.current_speed_rpm, self.current_steer_angle, brake_force)
             time.sleep(0.02)

@@ -94,7 +94,7 @@ stanley_controller:
 
 # Vehicle Parameters
 vehicle_params:
-  rpm_to_mps_factor: 0.0015
+  rpm_to_mps_factor: 0.0025
   max_speed_rpm: 1000.0
   speed_ramp_rate: 500
   brake_ramp_rate: 50
@@ -103,7 +103,7 @@ vehicle_params:
 
 # HMI Configuration
 hmi:
-  com_port: '/dev/ttyTHS1'
+  serial_port: '/dev/ttyS5'
   baud_rate: 115200
 
 # LLC Interface Configuration
