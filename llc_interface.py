@@ -82,78 +82,86 @@ class LLCInterfaceNode(ManagedNode, ConfigMixin):
     def on_activate(self) -> bool:
         self.logger.info("Activating LLC Interface Node...")
         
-        # Clear any pending commands
-        while not self.send_queue.empty():
-            self.send_queue.get_nowait()
-        
-        # Start/stop stream commands
-        self.send_queue.put(self._create_packet(self.FUNC_STOP_STREAM))
-        time.sleep(0.1)
-        self.send_queue.put(self._create_packet(self.FUNC_START_STREAM))
-        self.logger.info("Requested data stream start from vehicle.")
+        try:
+            # Clear any pending commands
+            while not self.send_queue.empty():
+                self.send_queue.get_nowait()
+            
+            # Start/stop stream commands
+            self.send_queue.put(self._create_packet(self.FUNC_STOP_STREAM))
+            time.sleep(0.1)
+            self.send_queue.put(self._create_packet(self.FUNC_START_STREAM))
+            self.logger.info("Requested data stream start from vehicle.")
 
-        # Start all threads
-        io_thread = threading.Thread(
-            target=self._serial_io_thread, 
-            name="SerialIOThread"
-        )
-        sub_thread = threading.Thread(
-            target=self._command_subscriber, 
-            name="CommandSubThread"
-        )
-        pub_thread = threading.Thread(
-            target=self._data_publisher, 
-            name="DataPubThread"
-        )
-        sender_thread = threading.Thread(
-            target=self._control_sender_thread, 
-            name="ControlSenderThread"
-        )
-        
-        self.threads = [io_thread, sub_thread, pub_thread, sender_thread]
-        for t in self.threads:
-            t.start()
-        
-        self.logger.info("All LLC Interface threads started.")
-        return True
+            # Start all threads
+            io_thread = threading.Thread(
+                target=self._serial_io_thread, 
+                name="SerialIOThread"
+            )
+            sub_thread = threading.Thread(
+                target=self._command_subscriber, 
+                name="CommandSubThread"
+            )
+            pub_thread = threading.Thread(
+                target=self._data_publisher, 
+                name="DataPubThread"
+            )
+            sender_thread = threading.Thread(
+                target=self._control_sender_thread, 
+                name="ControlSenderThread"
+            )
+            
+            self.threads = [io_thread, sub_thread, pub_thread, sender_thread]
+            for t in self.threads:
+                t.start()
+            
+            self.logger.info("All LLC Interface threads started.")
+            return True
+        except Exception as e:
+            self.logger.error(f"Activation failed: {e}")
+            return False
 
     def on_deactivate(self) -> bool:
         self.logger.info("Deactivating LLC Interface Node...")
-        self.shutdown_event.set()
+        try:
+            self.shutdown_event.set()
 
-        if self.ser and self.ser.is_open:
-            try:
-                self.logger.info("Stopping data stream and sending final stop command.")
-                self.ser.write(self._create_packet(self.FUNC_STOP_STREAM))
-                time.sleep(0.1)
-                # Send one last batch command to stop everything
-                payload = struct.pack('>HBBb', 0, 0, 100, 0)  # 0 RPM, 0 DIR, 100% BRAKE, 0 STEER
-                self.ser.write(self._create_packet(self.FUNC_CONTROL, payload))
-                time.sleep(0.1)
-            except serial.SerialException as e:
-                self.logger.error(f"Error sending deactivation commands: {e}")
+            if self.ser and self.ser.is_open:
+                try:
+                    self.logger.info("Stopping data stream and sending final stop command.")
+                    self.ser.write(self._create_packet(self.FUNC_STOP_STREAM))
+                    time.sleep(0.1)
+                    # Send one last batch command to stop everything
+                    payload = struct.pack('>HBBb', 0, 0, 100, 0)  # 0 RPM, 0 DIR, 100% BRAKE, 0 STEER
+                    self.ser.write(self._create_packet(self.FUNC_CONTROL, payload))
+                    time.sleep(0.1)
+                except serial.SerialException as e:
+                    self.logger.error(f"Error sending deactivation commands: {e}")
 
-        for t in self.threads:
-            t.join(timeout=1.5)
-        self.logger.info("All LLC Interface threads joined.")
-        
-        self.shutdown_event.clear()
-        return True
+            for t in self.threads:
+                t.join(timeout=1.5)
+            self.logger.info("All LLC Interface threads joined.")
+            
+            self.shutdown_event.clear()
+            return True
+        except Exception as e:
+            self.logger.error(f"Deactivation failed: {e}")
+            return False
 
     def on_shutdown(self) -> bool:
         self.logger.info("Shutting down LLC Interface Node...")
-        if self.ser and self.ser.is_open:
-            try:
+        try:
+            if self.ser and self.ser.is_open:
                 self.logger.info("Applying full brake and centering steer on exit.")
                 payload = struct.pack('>HBBb', 0, 0, 100, 0)  # 0 RPM, 0 DIR, 100% BRAKE, 0 STEER
                 self.ser.write(self._create_packet(self.FUNC_CONTROL, payload))
                 time.sleep(0.2)
-            except serial.SerialException as e:
-                self.logger.error(f"Error sending final commands: {e}")
-            finally:
-                self.ser.close()
-                self.logger.info("Serial port closed.")
-        return True
+                return True
+        except serial.SerialException as e:
+            self.logger.error(f"Error sending final commands: {e}")
+        finally:
+            self.ser.close()
+            self.logger.info("Serial port closed.")
 
     def _create_packet(self, func_code, payload=b''):
         """Creates a complete serial packet."""

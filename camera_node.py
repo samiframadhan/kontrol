@@ -149,6 +149,28 @@ class CameraNode(ManagedNode, ConfigMixin):
         except Exception as e:
             self.logger.error(f"Error during configuration: {e}")
             return False
+        
+    def on_deactivate(self):
+        return True
+    
+    def on_shutdown(self):
+        self.logger.info("Shutting down Camera Node...")
+        try:
+            if self.camera:
+                self.camera.stop()
+                self.camera = None
+            if self.pub_socket:
+                self.pub_socket.close()
+                self.pub_socket = None
+            if self.publishing_thread:
+                self.publishing_active.clear()
+                self.publishing_thread.join()
+                self.publishing_thread = None
+            logging.info("Camera Node shutdown complete.")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error during shutdown: {e}")
+            return False
 
     def on_activate(self) -> bool:
         self.logger.info("Activating Camera Node...")
@@ -221,6 +243,7 @@ def main():
     args = parser.parse_args()
 
     node_name = f"camera_node_{args.camera_type}"
+    print(f"Starting {node_name} with camera type: {args.camera_type}")
     camera_node = CameraNode(node_name=node_name, camera_type=args.camera_type)
     camera_node.run()
 

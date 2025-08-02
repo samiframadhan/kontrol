@@ -1,6 +1,13 @@
 # config.yaml
 # Unified configuration for the autonomous driving system
 
+orchestrator:
+  node_router_url: "tcp://*:5559"
+  state_pub_url: "tcp://*:5560" 
+  command_pull_url: "tcp://*:5561"
+  node_timeout: 10.0
+  poll_timeout: 100
+
 # ZMQ Communication URLs and Topics
 zmq:
   # Camera frame streaming
@@ -25,7 +32,7 @@ zmq:
   distance_topic: "aruco_distance"
   
   # Control commands to LLC
-  control_cmd_url: "tcp://localhost:5560"
+  control_cmd_url: "tcp://localhost:5563"
   control_cmd_topic: "teleop_cmd"
   
   # Sensor data from LLC
@@ -38,7 +45,7 @@ zmq:
 
 # Camera Configuration
 camera:
-  forward:
+  reverse:
     camera_source: "realsense"
     device_name: "Intel RealSense D435"
     frame_width: 640
@@ -47,9 +54,11 @@ camera:
     video_output_file: 'forward_view.mp4'
     use_display: false
   
-  reverse:
-    camera_source: "realsense"
-    device_name: "Intel RealSense D415"
+  forward:
+    # camera_source: "realsense"
+    # device_name: "Intel RealSense D415"
+    camera_source: "opencv"
+    source: 0  # Use OpenCV for forward camera
     frame_width: 640
     frame_height: 480
     frame_fps: 30

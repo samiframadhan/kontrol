@@ -71,28 +71,40 @@ class HMINode(ManagedNode, ConfigMixin):
 
     def on_activate(self) -> bool:
         self.logger.info("Activating HMI Node...")
-        self.active_event.set()
-        self.processing_thread = threading.Thread(target=self._read_serial_loop, daemon=True)
-        self.processing_thread.start()
-        return True
+        try:
+            self.active_event.set()
+            self.processing_thread = threading.Thread(target=self._read_serial_loop, daemon=True)
+            self.processing_thread.start()
+            return True
+        except Exception as e:
+            self.logger.error(f"Activation failed: {e}")
+            return False
 
     def on_deactivate(self) -> bool:
         self.logger.info("Deactivating HMI Node...")
-        self.active_event.clear()
-        if self.processing_thread:
-            self.processing_thread.join(timeout=1.0)
-        return True
+        try:
+            self.active_event.clear()
+            if self.processing_thread:
+                self.processing_thread.join(timeout=1.0)
+            return True
+        except Exception as e:
+            self.logger.error(f"Deactivation failed: {e}")
+            return False
 
     def on_shutdown(self) -> bool:
         self.logger.info("Shutting down HMI Node...")
-        if self.state == "active":
-            self.on_deactivate()
-        if self.ser and self.ser.is_open:
-            self.ser.close()
-            self.logger.info("Serial port closed.")
-        if self.pub_socket:
-            self.pub_socket.close()
-        return True
+        try:
+            if self.state == "active":
+                self.on_deactivate()
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+                self.logger.info("Serial port closed.")
+            if self.pub_socket:
+                self.pub_socket.close()
+            return True
+        except Exception as e:
+            self.logger.error(f"Error during shutdown: {e}")
+            return False
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

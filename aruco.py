@@ -66,29 +66,41 @@ class ArucoEstimatorNode(ManagedNode, ConfigMixin):
             return False
 
     def on_activate(self) -> bool:
-        self.logger.info("Activating ArUco Estimator Node...")
-        self.active_event.set()
-        self.processing_thread = threading.Thread(target=self._processing_loop, daemon=True)
-        self.processing_thread.start()
-        self.logger.info("ArUco Estimator Node activated.")
+        try:
+            self.logger.info("Activating ArUco Estimator Node...")
+            self.active_event.set()
+            self.processing_thread = threading.Thread(target=self._processing_loop, daemon=True)
+            self.processing_thread.start()
+            self.logger.info("ArUco Estimator Node activated.")
+        except Exception as e:
+            self.logger.error(f"Activation failed: {e}")
+            return False
         return True
 
     def on_deactivate(self) -> bool:
-        self.logger.info("Deactivating ArUco Estimator Node...")
-        self.active_event.clear()
-        if self.processing_thread:
-            self.processing_thread.join(timeout=1.0)
-        self.logger.info("ArUco Estimator Node deactivated.")
+        try:
+            self.logger.info("Deactivating ArUco Estimator Node...")
+            self.active_event.clear()
+            if self.processing_thread:
+                self.processing_thread.join(timeout=1.0)
+            self.logger.info("ArUco Estimator Node deactivated.")
+        except Exception as e:
+            self.logger.error(f"Deactivation failed: {e}")
+            return False
         return True
 
     def on_shutdown(self) -> bool:
-        self.logger.info("Shutting down ArUco Estimator Node...")
-        if self.state == NodeState.ACTIVE:
-            self.on_deactivate()
-        if self.camera_sub:
-            self.camera_sub.close()
-        if self.distance_pub:
+        try:
+            self.logger.info("Shutting down ArUco Estimator Node...")
+            if self.state == NodeState.ACTIVE:
+                self.on_deactivate()
+            if self.camera_sub:
+                self.camera_sub.close()
+            if self.distance_pub:
             self.distance_pub.close()
+        except Exception as e:
+            self.logger.error(f"Shutdown failed: {e}")
+            return False
         return True
 
     def _processing_loop(self):

@@ -79,26 +79,39 @@ class ControlNode(ManagedNode, ConfigMixin):
     # (Sisa dari kelas tidak ada yang berubah, gunakan versi lengkap dari respons sebelumnya)
     def on_activate(self) -> bool:
         self.logger.info("Activating Control Node...")
-        self.active_event.set()
-        self.processing_thread = threading.Thread(target=self._control_loop, daemon=True)
-        self.processing_thread.start()
+        try:
+            self.active_event.set()
+            self.processing_thread = threading.Thread(target=self._control_loop, daemon=True)
+            self.processing_thread.start()
+        except Exception as e:
+            self.logger.error(f"Activation failed: {e}")
+            return False
         return True
 
     def on_deactivate(self) -> bool:
         self.logger.info("Deactivating Control Node...")
-        self.active_event.clear()
-        if self.processing_thread: self.processing_thread.join(timeout=1.0)
-        self._send_llc_command(0.0, 0.0, 100)
-        return True
+        try:
+            self.active_event.clear()
+            if self.processing_thread:
+                self.processing_thread.join(timeout=1.0)
+            self.logger.info("Control Node deactivated.")
+            return True
+        except Exception as e:
+            self.logger.error(f"Deactivation failed: {e}")
+            return False
 
     def on_shutdown(self) -> bool:
         self.logger.info("Shutting down Control Node...")
-        if self.state == NodeState.ACTIVE: self.on_deactivate()
-        if self.hmi_sub: self.hmi_sub.close()
-        if self.steer_sub: self.steer_sub.close()
-        if self.distance_sub: self.distance_sub.close()
-        if self.llc_pub: self.llc_pub.close()
-        return True
+        try:
+            if self.state == NodeState.ACTIVE: self.on_deactivate()
+            if self.hmi_sub: self.hmi_sub.close()
+            if self.steer_sub: self.steer_sub.close()
+            if self.distance_sub: self.distance_sub.close()
+            if self.llc_pub: self.llc_pub.close()
+            return True
+        except Exception as e:
+            self.logger.error(f"Error during shutdown: {e}")
+            return False
 
     def _control_loop(self):
         self.logger.info("Control loop started.")
