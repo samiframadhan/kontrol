@@ -97,7 +97,7 @@ class ArucoEstimatorNode(ManagedNode, ConfigMixin):
             if self.camera_sub:
                 self.camera_sub.close()
             if self.distance_pub:
-            self.distance_pub.close()
+                self.distance_pub.close()
         except Exception as e:
             self.logger.error(f"Shutdown failed: {e}")
             return False
