@@ -1,4 +1,4 @@
-# orchestrator.py (Updated for unified config)
+# orchestrator.py (Updated for unified config and periodic state publishing)
 import zmq
 import time
 import json
@@ -29,6 +29,9 @@ class Orchestrator(ConfigMixin):
         self.COMMAND_PULL_URL = orch_config['command_pull_url']
         self.NODE_TIMEOUT = orch_config['node_timeout']
         self.POLL_TIMEOUT = orch_config['poll_timeout']
+        # --- MODIFICATION: Added state publish interval from config ---
+        # Get the interval for periodic state publishing, with a default of 5 seconds.
+        self.STATE_PUBLISH_INTERVAL = orch_config.get('state_publish_interval', 5) 
         
         # ZMQ setup
         self.context = zmq.Context()
@@ -72,6 +75,7 @@ class Orchestrator(ConfigMixin):
             } for identity, data in self.nodes.items()
         }
         self.pub_socket.send_multipart([b"STATE", json.dumps(serializable_nodes).encode()])
+        self._log_and_publish('debug', "Published node states.") # Added debug log for clarity
 
     def _send_command_to_node(self, node_identity, command):
         """Send a command to a specific node."""
@@ -208,6 +212,9 @@ class Orchestrator(ConfigMixin):
         self._log_and_publish('info', f"Publishing state updates on {self.STATE_PUB_URL}")
         self._log_and_publish('info', f"Listening for client commands on {self.COMMAND_PULL_URL}")
         
+        # --- MODIFICATION: Initialize last publish time ---
+        last_state_publish_time = time.time()
+        
         try:
             while not self.shutdown_event.is_set():
                 # Poll for incoming messages
@@ -226,6 +233,12 @@ class Orchestrator(ConfigMixin):
                 # Maintenance tasks
                 self._check_for_dead_nodes()
                 self._process_command_queue()
+                
+                # --- MODIFICATION: Periodically publish state ---
+                current_time = time.time()
+                if current_time - last_state_publish_time >= self.STATE_PUBLISH_INTERVAL:
+                    self._publish_state()
+                    last_state_publish_time = current_time
                 
         except KeyboardInterrupt:
             self._log_and_publish('info', "\nShutdown signal received via KeyboardInterrupt.")
