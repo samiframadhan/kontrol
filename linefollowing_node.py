@@ -407,7 +407,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             # Send steering command and desired velocity via ZMQ
             command = steering_command_pb2.SteeringCommand()
             command.auto_steer_angle = steering_angle_deg
-            command.desired_velocity_rpm = desired_speed_rpm  # Add this field to your protobuf
+            command.speed = desired_speed_rpm  # Add this field to your protobuf
             serialized_command = command.SerializeToString()
             self.pub_socket.send_string(self.get_zmq_topic('steering_cmd_topic'), flags=zmq.SNDMORE)
             self.pub_socket.send(serialized_command)

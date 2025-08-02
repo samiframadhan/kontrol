@@ -117,25 +117,42 @@ class ArucoEstimatorNode(ManagedNode, ConfigMixin):
                     topic = self.camera_sub.recv_string(flags=zmq.NOBLOCK)
                     frame_bytes = self.camera_sub.recv(flags=zmq.NOBLOCK)
                     frame = np.frombuffer(frame_bytes, dtype=self.dtype).reshape(self.frame_shape).copy()
+                    if frame is None or frame.size == 0:
+                        self.logger.warning("Received empty frame from camera.")
+                        continue
+                    else:
+                        self.logger.info(f"Received frame of shape {frame.shape} from topic '{topic}'")
                     
                     corners, ids, _ = self.detector.detectMarkers(frame)
+                    
                     if ids is not None:
                         rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
                             corners, aruco_config['known_marker_width_m'], 
                             self.camera_matrix, self.dist_coeffs
                         )
                         direct_dist = tvecs[0][0][2]
+                        cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+
+
+
                         if direct_dist > aruco_config['camera_height_m']:
                             ground_distance = np.sqrt(direct_dist**2 - aruco_config['camera_height_m']**2)
                             self.distance_pub.send_string(self.get_zmq_topic('distance_topic'), flags=zmq.SNDMORE)
                             self.distance_pub.send_string(f"{ground_distance}")
 
+                            cv2.drawFrameAxes(frame, self.camera_matrix, self.dist_coeffs, rvecs[0], tvecs[0], 0.1)
+                            cv2.putText(frame, f"Jarak: {ground_distance:.2f} m", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    cv2.imshow("Aruco Estimator - Visual Feed", frame)
+                    cv2.waitKey(1)
                 except zmq.Again:
                     continue
+
+                
         
         local_poller.unregister(self.camera_sub)
-        self.logger.info("ArUco processing loop stopped.")
+        self.logger.info("Processing loop stopped.")
 
 if __name__ == "__main__":
     node = ArucoEstimatorNode()
     node.run()
+    

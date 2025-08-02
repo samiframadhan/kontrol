@@ -167,10 +167,10 @@ class ControlNode(ManagedNode, ConfigMixin):
                 topic, serialized_data = self.steer_sub.recv_multipart()
                 command = steering_command_pb2.SteeringCommand()
                 command.ParseFromString(serialized_data)
-                self.logger.info(f"Received steering command: {command.auto_steer_angle} degrees; speed: {command.desired_velocity_rpm} RPM")
+                self.logger.info(f"Received steering command: {command.auto_steer_angle} degrees; speed: {command.speed} RPM")
                 self.current_steer_angle = command.auto_steer_angle
-                self.desired_speed_rpm = command.desired_velocity_rpm
-                #TODO: Stream camera overlay 
+                self.desired_speed_rpm = command.speed
+                #TODO: Stream camera overlay
 
             brake_force = 0
             if self.is_running:

@@ -52,26 +52,26 @@ camera:
     frame_height: 480
     frame_fps: 30
     video_output_file: 'forward_view.mp4'
-    use_display: false
+    use_display: true
   
   forward:
-    # camera_source: "realsense"
-    # device_name: "Intel RealSense D415"
-    camera_source: "opencv"
-    source: 0  # Use OpenCV for forward camera
+    camera_source: "realsense"
+    device_name: "Intel RealSense D435"
+    # camera_source: "opencv"
+    # source: 0  # Use OpenCV for forward camera
     frame_width: 640
     frame_height: 480
     frame_fps: 30
     video_output_file: 'reverse_view.mp4'
-    use_display: false
+    use_display: true
 
 # ArUco Detection Configuration
 aruco:
   frame_width: 640
   frame_height: 480
-  calibration_file: "calibrationc270.yaml"
+  calibration_file: "calibrationd415.yml"
   camera_height_m: 1.5
-  known_marker_width_m: 0.1
+  known_marker_width_m: 0.145
 
 # Lane Detection Parameters
 lane_detection:
