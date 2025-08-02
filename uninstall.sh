@@ -15,9 +15,9 @@ STANDARD_PYTHON_NODES=(
 )
 
 # Special handling for the camera node from the installer
-CAMERA_CONFIGS=(
-    "camera.yaml"
-    "camera_reverse.yaml"
+CAMERA_TYPES=(
+    "forward"
+    "reverse"
 )
 
 # --- Boilerplate ---
@@ -43,9 +43,9 @@ for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
 done
 
 # Generate service names for camera nodes
-for config_file in "${CAMERA_CONFIGS[@]}"; do
+for camera_type in "${CAMERA_TYPES[@]}"; do
     # This logic exactly matches the service name creation in install.sh
-    service_name="camera_${config_file%.yaml}.service"
+    service_name="camera_${camera_type}.service"
     ALL_SERVICES+=("$service_name")
 done
 

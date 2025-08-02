@@ -8,16 +8,16 @@ STANDARD_PYTHON_NODES=(
     "aruco.py"
     "control.py"
     "hmi_node.py"
-    "linefollowing_node.py" # Corrected name for the consolidated node
+    "linefollowing_node.py"
     "llc_interface.py"
     "orchestrator.py"
 )
 
 # Special handling for the camera node, which runs as multiple instances
 CAMERA_SCRIPT="camera_node.py"
-CAMERA_CONFIGS=(
-    "camera.yaml"
-    "camera_reverse.yaml"
+CAMERA_TYPES=(
+    "forward"
+    "reverse"
 )
 
 # --- Boilerplate ---
@@ -88,8 +88,8 @@ EOL
 done
 
 # --- Create services for camera node instances ---
-for config_file in "${CAMERA_CONFIGS[@]}"; do
-    service_name="camera_${config_file%.yaml}.service"
+for camera_type in "${CAMERA_TYPES[@]}"; do
+    service_name="camera_${camera_type}.service"
     service_file_path="$SERVICE_FILES_DIR/$service_name"
     venv_python_path="$PROJECT_DIR/$VENV_NAME/bin/python"
     script_path="$PROJECT_DIR/$CAMERA_SCRIPT"
@@ -97,14 +97,14 @@ for config_file in "${CAMERA_CONFIGS[@]}"; do
     echo "Creating service file: $service_file_path"
     tee "$service_file_path" > /dev/null << EOL
 [Unit]
-Description=Kontrol Camera Service for ${config_file}
+Description=Kontrol Camera Service for ${camera_type} camera
 After=network.target
 
 [Service]
 User=$RUN_AS_USER
 Group=$RUN_AS_GROUP
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$venv_python_path $script_path --config ${config_file}
+ExecStart=$venv_python_path $script_path --camera-type ${camera_type}
 Restart=on-failure
 RestartSec=5
 
@@ -122,8 +122,8 @@ ALL_SERVICES=()
 for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
     ALL_SERVICES+=("${node_script%.py}.service")
 done
-for config_file in "${CAMERA_CONFIGS[@]}"; do
-    ALL_SERVICES+=("camera_${config_file%.yaml}.service")
+for camera_type in "${CAMERA_TYPES[@]}"; do
+    ALL_SERVICES+=("camera_${camera_type}.service")
 done
 
 for service_name in "${ALL_SERVICES[@]}"; do
