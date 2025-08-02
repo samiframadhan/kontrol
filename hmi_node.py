@@ -40,23 +40,30 @@ class HMINode(ManagedNode, ConfigMixin):
         while self.active_event.is_set():
             if self.ser.in_waiting > 0:
                 try:
-                    line = self.ser.readline().decode('utf-8').strip()
-                    if "START" in line:
+                    stbyte = self.ser.read(1)
+                    if stbyte == b'\xA5':
                         self.logger.info("Received START command from HMI.")
                         self.pub_socket.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
                         self.pub_socket.send_string("START")
-                    elif "STOP" in line:
+                        self.ser.reset_input_buffer()
+                        self.logger.info("Serial buffer emptied after START command.")
+                    elif stbyte == b'\xA6':
                         self.logger.info("Received STOP command from HMI.")
                         self.pub_socket.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
                         self.pub_socket.send_string("STOP")
-                    elif "REV" in line:
-                        if line[3]:
-                            rev_state = int(line[3] == '\x01')
-                            self.is_reverse = bool(rev_state)
-                            direction = "reverse" if self.is_reverse else "forward"
-                            self.logger.info(f"Direction set to {direction} from HMI.")
-                            self.pub_socket.send_string(self.get_zmq_topic('hmi_direction_topic'), flags=zmq.SNDMORE)
-                            self.pub_socket.send_string(direction)
+                        self.ser.reset_input_buffer()
+                        self.logger.info("Serial buffer emptied after STOP command.")
+                    elif stbyte == b'\xA7':
+                        status = self.ser.read(1)
+                        direction = "reverse" if status == b'\x01' else "forward"
+                        self.logger.info(f"Received DIRECTION command from HMI: {direction}.")
+                        self.pub_socket.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
+                        self.pub_socket.send_string(direction)
+                        self.ser.reset_input_buffer()
+                        self.logger.info("Serial buffer emptied after DIRECTION command.")
+                    else:
+                        pass
+
                 except UnicodeDecodeError:
                     self.logger.warning("Received non-UTF-8 characters from serial port.")
             time.sleep(0.1)
