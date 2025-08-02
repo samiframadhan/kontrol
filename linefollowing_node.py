@@ -342,12 +342,15 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         while self.active_event.is_set() and not self.shutdown_event.is_set():
             # Check for HMI direction updates and sensor data
             socks = dict(poller.poll(100))
-            
+            if not socks:
+                continue
+
             if self.hmi_sub_socket in socks:
                 topic, msg = self.hmi_sub_socket.recv_multipart()
-                self.is_reverse = msg.decode('utf-8') == 'reverse'
-                self.logger.info(f"Direction updated to {'reverse' if self.is_reverse else 'forward'}")
-            
+                if topic == self.get_zmq_topic('hmi_direction_topic'):
+                    self.logger.info(f"HMI command received: {msg.decode('utf-8')}")
+                    self.is_reverse = msg.decode('utf-8') == 'reverse'
+
             # Update current speed from sensor data
             if self.sensor_sub_socket in socks:
                 topic, sensor_data_json = self.sensor_sub_socket.recv_multipart()
@@ -364,18 +367,20 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 self.current_speed_rpm = sc_config.get('assumed_speed_for_calc', 500.0)
             
             # Process frame for lane detection
+            rev_frame = self.camera_reverse.get_frame()
+            forward_frame = self.camera.get_frame()
             if self.is_reverse:
-                frame = self.camera_reverse.get_frame()
-                if frame is None:
+                if rev_frame is None:
                     continue
-                lane_data = self.lane_detector.process_frame(frame)
+                lane_data = self.lane_detector.process_frame(rev_frame)
+                self.logger.info("Processing reverse camera frame.")
             else:
-                frame = self.camera.get_frame()
-                if frame is None:
+                if forward_frame is None:
                     continue
-                lane_data = self.lane_detector.process_frame(frame)
+                lane_data = self.lane_detector.process_frame(forward_frame)
+                self.logger.info("Processing forward camera frame.")
 
-            self.result_writer.write(lane_data['warped_image'])
+            # self.result_writer.write(lane_data['warped_image'])
             # Convert RPM to m/s for Stanley controller (approximate conversion)
             # This is a rough conversion - you may need to calibrate this based on your vehicle
             current_speed_ms = abs(self.current_speed_rpm) * self.vehicle_params['rpm_to_mps_factor']
@@ -385,7 +390,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             steering_angle_rad = StanleyController.calculate_steering(
                 lane_data['cross_track_error'],
                 lane_data['heading_error'],
-                current_speed_ms,
+                0.5 if current_speed_ms < 1.0 else current_speed_ms,
                 sc_config['gain'],
                 sc_config['speed_epsilon'],
                 self.is_reverse
@@ -396,7 +401,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             desired_speed_ms = StanleyController.calculate_velocity(
                 lane_data['cross_track_error'],
                 lane_data['heading_error'],
-                current_speed_ms,
+                sc_config.get('max_speed', 1.0),
                 sc_config.get('velocity_k_cte', 2.0),
                 sc_config.get('velocity_k_heading', 1.0),
                 self.is_reverse
@@ -413,12 +418,12 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.pub_socket.send(serialized_command)
 
             # Create visualization
-            warped_view = lane_data.get('warped_image', np.zeros_like(frame))
+            warped_view = lane_data.get('warped_image', np.zeros_like(forward_frame))
             annotated_warped = self.visualizer.draw_pipeline_data(
                 warped_view, lane_data, steering_angle_rad, 
                 self.current_speed_rpm, desired_speed_rpm
             )
-            stacked_output = np.hstack((frame, annotated_warped))
+            stacked_output = np.hstack((forward_frame, annotated_warped))
             
             # Display if enabled
             if cam_config.get('use_display', False):

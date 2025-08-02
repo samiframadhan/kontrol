@@ -50,8 +50,8 @@ class HMINode(ManagedNode, ConfigMixin):
                         self.pub_socket.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
                         self.pub_socket.send_string("STOP")
                     elif "REV" in line:
-                        if line[3].isdigit():
-                            rev_state = int(line[3])
+                        if line[3]:
+                            rev_state = int(line[3] == '\x01')
                             self.is_reverse = bool(rev_state)
                             direction = "reverse" if self.is_reverse else "forward"
                             self.logger.info(f"Direction set to {direction} from HMI.")

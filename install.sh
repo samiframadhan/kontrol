@@ -79,7 +79,7 @@ User=$RUN_AS_USER
 Group=$RUN_AS_GROUP
 WorkingDirectory=$PROJECT_DIR
 ExecStart=$venv_python_path $script_path
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]

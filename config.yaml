@@ -6,7 +6,7 @@ orchestrator:
   state_pub_url: "tcp://*:5560" 
   command_pull_url: "tcp://*:5561"
   node_timeout: 10.0
-  poll_timeout: 100
+  poll_timeout: 10
 
 # ZMQ Communication URLs and Topics
 zmq:
@@ -45,7 +45,7 @@ zmq:
 
 # Camera Configuration
 camera:
-  reverse:
+  forward:
     camera_source: "realsense"
     device_name: "Intel RealSense D435"
     frame_width: 640
@@ -54,9 +54,9 @@ camera:
     video_output_file: 'forward_view.mp4'
     use_display: false
   
-  forward:
+  reverse:
     camera_source: "realsense"
-    device_name: "Intel RealSense D435"
+    device_name: "Intel RealSense D415"
     # camera_source: "opencv"
     # source: 0  # Use OpenCV for forward camera
     frame_width: 640
@@ -87,8 +87,8 @@ lane_detection:
 stanley_controller:
   gain: 0.5
   speed_epsilon: 0.000001
-  assumed_speed_for_calc: 1.0
-  max_speed: 1.0
+  assumed_speed_for_calc: 3.0
+  max_speed: 3.0
   kcte: 0.5
   khe: 0.5
 
@@ -103,7 +103,7 @@ vehicle_params:
 
 # HMI Configuration
 hmi:
-  serial_port: '/dev/ttyS5'
+  serial_port: '/dev/ttyUSB0'
   baud_rate: 115200
 
 # LLC Interface Configuration
