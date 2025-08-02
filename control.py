@@ -5,6 +5,7 @@ import logging
 import threading
 from managednode import ManagedNode
 from shared_enums import NodeState
+from config_mixin import ConfigMixin
 import steering_command_pb2
 
 # --- Konfigurasi TCP ---
@@ -24,11 +25,15 @@ BRAKE_RAMP_RATE = 50
 MAX_BRAKE_FORCE = 100
 DISTANCE_THRESHOLD = 0.2
 
-class ControlNode(ManagedNode):
-    # (Metode __init__ dan lainnya tidak berubah)
-    def __init__(self, node_name="control_node"):
-        super().__init__(node_name)
-        self.hmi_sub, self.steer_sub, self.distance_sub, self.llc_pub = None, None, None, None
+class ControlNode(ManagedNode, ConfigMixin):
+    def __init__(self, node_name="control_node", config_path="config.yaml"):
+        ManagedNode.__init__(self, node_name)
+        ConfigMixin.__init__(self, config_path)
+        
+        self.hmi_sub = None
+        self.steer_sub = None
+        self.distance_sub = None
+        self.llc_pub = None
         self.control_poller = zmq.Poller()
         self.is_running = False
         self.is_reverse = False
@@ -36,7 +41,6 @@ class ControlNode(ManagedNode):
         self.current_steer_angle = 0.0
         self.time_stopped = None
         self.time_started = None
-
         self.processing_thread = None
         self.active_event = threading.Event()
         self.last_log_time = 0
@@ -46,27 +50,27 @@ class ControlNode(ManagedNode):
     def on_configure(self) -> bool:
         self.logger.info("Configuring Control Node...")
         try:
+            # Setup ZMQ connections using unified config
             self.hmi_sub = self.context.socket(zmq.SUB)
-            self.hmi_sub.connect(ZMQ_HMI_SUB_URL)
-            self.hmi_sub.setsockopt_string(zmq.SUBSCRIBE, HMI_TOPIC)
+            self.hmi_sub.connect(self.get_zmq_url('hmi_cmd_url'))
+            self.hmi_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_cmd_topic'))
 
             self.steer_sub = self.context.socket(zmq.SUB)
-            self.steer_sub.connect(ZMQ_STEER_SUB_URL)
-            self.steer_sub.setsockopt_string(zmq.SUBSCRIBE, LANE_ASSIST_TOPIC)
+            self.steer_sub.connect(self.get_zmq_url('steering_cmd_url'))
+            self.steer_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('steering_cmd_topic'))
             
-            # --- PERBAIKAN DI SINI ---
-            # Subscriber (penerima) harus selalu connect()
             self.distance_sub = self.context.socket(zmq.SUB)
-            self.distance_sub.connect(ZMQ_DISTANCE_SUB_URL) 
-            self.distance_sub.setsockopt_string(zmq.SUBSCRIBE, DISTANCE_TOPIC)
-            # --------------------------
+            self.distance_sub.connect(self.get_zmq_url('distance_url'))
+            self.distance_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('distance_topic'))
 
             self.llc_pub = self.context.socket(zmq.PUB)
-            self.llc_pub.bind(ZMQ_LLC_PUB_URL)
+            self.llc_pub.bind(self.get_zmq_url('control_cmd_url'))
 
+            # Register all sockets with poller
             self.control_poller.register(self.hmi_sub, zmq.POLLIN)
             self.control_poller.register(self.steer_sub, zmq.POLLIN)
             self.control_poller.register(self.distance_sub, zmq.POLLIN)
+            
             return True
         except zmq.ZMQError as e:
             self.logger.error(f"ZMQ Error: {e}")
@@ -178,8 +182,8 @@ class ControlNode(ManagedNode):
         self.logger.info("Control loop stopped.")
     
     def _send_llc_command(self, speed, steer, brake):
-        command = { "speed_rpm": speed, "steer_angle": steer, "brake_force": brake }
-        self.llc_pub.send_string(LLC_TOPIC, flags=zmq.SNDMORE)
+        command = {"speed_rpm": speed, "steer_angle": steer, "brake_force": brake}
+        self.llc_pub.send_string(self.get_zmq_topic('control_cmd_topic'), flags=zmq.SNDMORE)
         self.llc_pub.send_json(command)
 
 if __name__ == "__main__":

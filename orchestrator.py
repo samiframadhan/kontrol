@@ -4,6 +4,7 @@ import time
 import json
 import logging
 import threading
+import yaml
 from collections import deque
 from shared_enums import NodeState, MessageType
 
@@ -22,17 +23,28 @@ logging.basicConfig(
 )
 
 class Orchestrator:
-    def __init__(self):
+    def __init__(self, config_path='config.yaml'):
+        """
+        Initializes the Orchestrator by loading ZMQ configurations from a YAML file.
+        """
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)['zmq_urls']
+
+        self.nodes_url = config['orchestrator_nodes'].replace('localhost', '*')
+        self.states_url = config['orchestrator_states'].replace('localhost', '*')
+        self.cmds_url = config['orchestrator_cmds'].replace('localhost', '*')
+
         self.context = zmq.Context()
-        self.node_socket = self.context.socket(zmq.ROUTER)
-        self.node_socket.bind(NODE_ROUTER_URL)
-        self.pub_socket = self.context.socket(zmq.PUB)
-        self.pub_socket.bind(STATE_PUB_URL)
-        self.command_socket = self.context.socket(zmq.PULL)
-        self.command_socket.bind(COMMAND_PULL_URL)
-        self.poller = zmq.Poller()
-        self.poller.register(self.node_socket, zmq.POLLIN)
-        self.poller.register(self.command_socket, zmq.POLLIN)
+        # Socket to listen for nodes
+        self.nodes_socket = self.context.socket(zmq.REP)
+        self.nodes_socket.bind(self.nodes_url)
+        # Socket to publish node states
+        self.states_socket = self.context.socket(zmq.PUB)
+        self.states_socket.bind(self.states_url)
+        # Socket for external commands
+        self.cmds_socket = self.context.socket(zmq.PULL)
+        self.cmds_socket.bind(self.cmds_url)
+        print("Orchestrator initialized.")
         self.nodes = {}
         self.command_queue = deque()
         self.shutdown_event = threading.Event()

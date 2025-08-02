@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 
 # Assuming managednode.py is in the same directory or accessible in the python path
 from managednode import ManagedNode
-
+from config_mixin import ConfigMixin
 # -------------------------------------------------------------------
 # --- 2. CORE CLASSES -----------------------------------------------
 # -------------------------------------------------------------------
@@ -122,51 +122,38 @@ class ZMQCamera(Camera):
         if self.socket:
             logging.info("Closing ZMQ frame subscriber socket.")
             self.socket.close()
-class CameraNode(ManagedNode):
-    """
-    A managed node for capturing frames from a camera or video file
-    and publishing them over a ZMQ PUB socket.
-    """
-    def __init__(self, node_name: str, config_path: str):
-        super().__init__(node_name)
-        self.config_path = config_path
-        self.config = None
+# camera_node.py (Updated sections only)
+from config_mixin import ConfigMixin
+
+class CameraNode(ManagedNode, ConfigMixin):
+    def __init__(self, node_name: str, config_path: str = "config.yaml", camera_type: str = "forward"):
+        ManagedNode.__init__(self, node_name)
+        ConfigMixin.__init__(self, config_path)
+        
+        self.camera_type = camera_type
         self.pub_socket = None
-        self.camera = None # Changed from self.cap to self.camera for abstraction
+        self.camera = None
         self.publishing_thread = None
         self.publishing_active = threading.Event()
 
     def on_configure(self) -> bool:
-        """
-        Loads configuration and sets up ZMQ resources.
-        """
-        self.logger.info(f"Configuring Camera Node with {self.config_path}...")
+        self.logger.info(f"Configuring Camera Node ({self.camera_type})...")
         try:
-            with open(self.config_path, 'r') as f:
-                self.config = yaml.safe_load(f)
-            
-            # --- ZMQ Publisher Setup ---
-            zmq_config = self.config.get('zmq', {})
+            # Setup ZMQ Publisher
+            url_key = 'camera_frame_url' if self.camera_type == 'forward' else 'camera_frame_reverse_url'
             self.pub_socket = self.context.socket(zmq.PUB)
-            self.pub_socket.bind(zmq_config['pub_frame_url'])
-            self.logger.info(f"ZMQ Publisher bound to {zmq_config['pub_frame_url']}")
+            self.pub_socket.bind(self.get_zmq_url(url_key))
+            self.logger.info(f"ZMQ Publisher bound to {self.get_zmq_url(url_key)}")
             
             return True
-        except FileNotFoundError:
-            self.logger.error(f"Configuration file not found at: {self.config_path}")
-            return False
         except Exception as e:
             self.logger.error(f"Error during configuration: {e}")
             return False
 
     def on_activate(self) -> bool:
-        """
-        Opens the camera and starts the frame publishing thread.
-        Returns True on success, False on failure.
-        """
         self.logger.info("Activating Camera Node...")
         try:
-            camera_config = self.config.get('camera', {})
+            camera_config = self.get_camera_config(self.camera_type)
             source = camera_config.get('source', 0)
             camera_source_type = camera_config.get('camera_source')
 
@@ -178,11 +165,9 @@ class CameraNode(ManagedNode):
                 self.logger.error(f"Unsupported camera source: '{camera_source_type}'")
                 return False
 
-            # Start the selected camera
             self.camera.start()
             self.logger.info(f"Camera '{camera_source_type}' started successfully.")
 
-            # Start the publishing loop in a separate thread
             self.publishing_active.set()
             self.publishing_thread = threading.Thread(target=self._publish_loop, daemon=True)
             self.publishing_thread.start()
@@ -191,52 +176,18 @@ class CameraNode(ManagedNode):
             return True
         except Exception as e:
             self.logger.error(f"Failed to activate Camera Node: {e}")
-            self.camera = None # Ensure camera is reset on failure
+            self.camera = None
             return False
 
-
-    def on_deactivate(self) -> bool:
-        """
-        Stops the publishing thread and releases the camera.
-        """
-        self.logger.info("Deactivating Camera Node...")
-        self.publishing_active.clear() # Signal the loop to stop
-        if self.publishing_thread and self.publishing_thread.is_alive():
-            self.publishing_thread.join(timeout=1.0)
-        
-        if self.camera:
-            self.camera.stop()
-            self.logger.info("Camera stopped.")
-        
-        self.camera = None
-        self.publishing_thread = None
-        return True
-
-    def on_shutdown(self) -> bool:
-        """
-        Cleans up all resources.
-        """
-        self.logger.info("Shutting down Camera Node...")
-        if self.state == "active":
-            self.on_deactivate() # First, deactivate to stop threads and release camera
-
-        if self.pub_socket:
-            self.pub_socket.close()
-            self.logger.info("Publisher socket closed.")
-            
-        return True
-
     def _publish_loop(self):
-        """
-        The main loop for capturing and publishing frames.
-        """
-        camera_config = self.config.get('camera', {})
-        zmq_config = self.config.get('zmq', {})
+        camera_config = self.get_camera_config(self.camera_type)
         
         frame_width = camera_config.get('frame_width', 640)
         frame_height = camera_config.get('frame_height', 480)
         fps = camera_config.get('frame_fps', 30)
-        frame_topic = zmq_config.get('frame_topic', 'frame')
+        
+        topic_key = 'camera_frame_topic' if self.camera_type == 'forward' else 'camera_frame_reverse_topic'
+        frame_topic = self.get_zmq_topic(topic_key)
 
         self.logger.info(f"Publishing topic '{frame_topic}' at approximately {fps} FPS.")
         
@@ -247,14 +198,12 @@ class CameraNode(ManagedNode):
 
             frame = self.camera.get_frame()
             if frame is None:
-                self.logger.warning("Failed to get frame from camera. Assuming end of stream.")
+                self.logger.warning("Failed to get frame from camera.")
                 break
 
-            # Resize if necessary (as a fallback)
             if frame.shape[1] != frame_width or frame.shape[0] != frame_height:
-                 frame = cv2.resize(frame, (frame_width, frame_height))
+                frame = cv2.resize(frame, (frame_width, frame_height))
 
-            # Publish the frame
             try:
                 self.pub_socket.send_string(frame_topic, flags=zmq.SNDMORE)
                 self.pub_socket.send(frame.tobytes())
@@ -265,17 +214,14 @@ class CameraNode(ManagedNode):
         self.logger.info("Publish loop has terminated.")
 
 def main():
-    """
-    Main function to instantiate and run the CameraNode.
-    """
-    # This allows you to run two instances of the camera node with different configurations
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='camera.yaml', help='Path to the camera configuration file.')
+    parser.add_argument('--camera-type', type=str, default='forward', 
+                       choices=['forward', 'reverse'], help='Camera type to use')
     args = parser.parse_args()
 
-    node_name = "camera_node_" + args.config.replace('.yaml', '')
-    camera_node = CameraNode(node_name=node_name, config_path=args.config)
+    node_name = f"camera_node_{args.camera_type}"
+    camera_node = CameraNode(node_name=node_name, camera_type=args.camera_type)
     camera_node.run()
 
 if __name__ == "__main__":

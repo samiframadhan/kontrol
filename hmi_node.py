@@ -4,6 +4,7 @@ import time
 import logging
 import threading
 from managednode import ManagedNode
+from config_mixin import ConfigMixin
 
 # Configuration
 COM_PORT = '/dev/ttyTHS1'  # Example for Jetson Nano, change as needed
@@ -13,9 +14,11 @@ HMI_CMD_TOPIC = "hmi_cmd"
 HMI_DIRECTION_TOPIC = "hmi_direction"
 
 
-class HMINode(ManagedNode):
-    def __init__(self, node_name="hmi_node"):
-        super().__init__(node_name)
+class HMINode(ManagedNode, ConfigMixin):
+    def __init__(self, node_name="hmi_node", config_path="config.yaml"):
+        ManagedNode.__init__(self, node_name)
+        ConfigMixin.__init__(self, config_path)
+        
         self.ser = None
         self.pub_socket = None
         self.processing_thread = None
@@ -25,18 +28,46 @@ class HMINode(ManagedNode):
     def on_configure(self) -> bool:
         self.logger.info("Configuring HMI Node...")
         try:
-            self.ser = serial.Serial(COM_PORT, BAUD_RATE, timeout=1)
-            self.logger.info(f"Successfully opened serial port {COM_PORT}")
+            hmi_config = self.get_section_config('hmi')
+            
+            self.ser = serial.Serial(hmi_config['com_port'], hmi_config['baud_rate'], timeout=1)
+            self.logger.info(f"Successfully opened serial port {hmi_config['com_port']}")
+            
             self.pub_socket = self.context.socket(zmq.PUB)
-            self.pub_socket.bind(ZMQ_PUB_URL)
-            self.logger.info(f"Publisher bound to {ZMQ_PUB_URL}")
+            self.pub_socket.bind(self.get_zmq_url('hmi_cmd_url'))
+            self.logger.info(f"Publisher bound to {self.get_zmq_url('hmi_cmd_url')}")
+            
             return True
-        except serial.SerialException as e:
-            self.logger.error(f"Could not open serial port '{COM_PORT}'. {e}")
+        except Exception as e:
+            self.logger.error(f"Configuration failed: {e}")
             return False
-        except zmq.ZMQError as e:
-            self.logger.error(f"ZMQ Error: {e}")
-            return False
+
+    def _read_serial_loop(self):
+        self.logger.info("Listening for HMI commands on serial port...")
+        while self.active_event.is_set():
+            if self.ser.in_waiting > 0:
+                try:
+                    line = self.ser.readline().decode('utf-8').strip()
+                    if "START" in line:
+                        self.logger.info("Received START command from HMI.")
+                        self.pub_socket.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
+                        self.pub_socket.send_string("START")
+                    elif "STOP" in line:
+                        self.logger.info("Received STOP command from HMI.")
+                        self.pub_socket.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
+                        self.pub_socket.send_string("STOP")
+                    elif "REV" in line:
+                        if line[3].isdigit():
+                            rev_state = int(line[3])
+                            self.is_reverse = bool(rev_state)
+                            direction = "reverse" if self.is_reverse else "forward"
+                            self.logger.info(f"Direction set to {direction} from HMI.")
+                            self.pub_socket.send_string(self.get_zmq_topic('hmi_direction_topic'), flags=zmq.SNDMORE)
+                            self.pub_socket.send_string(direction)
+                except UnicodeDecodeError:
+                    self.logger.warning("Received non-UTF-8 characters from serial port.")
+            time.sleep(0.1)
+        self.logger.info("HMI serial loop stopped.")
 
     def on_activate(self) -> bool:
         self.logger.info("Activating HMI Node...")
@@ -62,33 +93,6 @@ class HMINode(ManagedNode):
         if self.pub_socket:
             self.pub_socket.close()
         return True
-
-    def _read_serial_loop(self):
-        self.logger.info("Listening for HMI commands on serial port...")
-        while self.active_event.is_set():
-            if self.ser.in_waiting > 0:
-                try:
-                    line = self.ser.readline().decode('utf-8').strip()
-                    if "START" in line:
-                        self.logger.info("Received START command from HMI.")
-                        self.pub_socket.send_string(HMI_CMD_TOPIC, flags=zmq.SNDMORE)
-                        self.pub_socket.send_string("START")
-                    elif "STOP" in line:
-                        self.logger.info("Received STOP command from HMI.")
-                        self.pub_socket.send_string(HMI_CMD_TOPIC, flags=zmq.SNDMORE)
-                        self.pub_socket.send_string("STOP")
-                    elif "REV" in line:
-                        if line[3].isdigit():
-                            rev_state = int(line[3])
-                            self.is_reverse = bool(rev_state)
-                            direction = "reverse" if self.is_reverse else "forward"
-                            self.logger.info(f"Direction set to {direction} from HMI.")
-                            self.pub_socket.send_string(HMI_DIRECTION_TOPIC, flags=zmq.SNDMORE)
-                            self.pub_socket.send_string(direction)
-                except UnicodeDecodeError:
-                    self.logger.warning("Received non-UTF-8 characters from serial port.")
-            time.sleep(0.1)
-        self.logger.info("HMI serial loop stopped.")
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

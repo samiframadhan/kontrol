@@ -1,8 +1,43 @@
 # config.yaml
 # Unified configuration for the autonomous driving system
 
+# ZMQ Communication URLs and Topics
+zmq:
+  # Camera frame streaming
+  camera_frame_url: "tcp://localhost:5555"
+  camera_frame_topic: "cam_frame"
+  
+  # Camera frame streaming (reverse)
+  camera_frame_reverse_url: "tcp://localhost:5558"
+  camera_frame_reverse_topic: "cam_frame_reverse"
+  
+  # HMI commands
+  hmi_cmd_url: "tcp://localhost:5557"
+  hmi_cmd_topic: "hmi_cmd"
+  hmi_direction_topic: "hmi_direction"
+  
+  # Steering commands from lane following
+  steering_cmd_url: "ipc:///tmp/teleop_cmd.ipc"
+  steering_cmd_topic: "lane_assist_angle"
+  
+  # Distance data from ArUco
+  distance_url: "tcp://localhost:5556"
+  distance_topic: "aruco_distance"
+  
+  # Control commands to LLC
+  control_cmd_url: "tcp://localhost:5560"
+  control_cmd_topic: "teleop_cmd"
+  
+  # Sensor data from LLC
+  sensor_data_url: "tcp://localhost:5561"
+  sensor_data_topic: "sensor_data"
+  
+  # Lane assist status
+  lane_status_url: "ipc:///tmp/lane_assist_status.ipc"
+  lane_status_topic: "lane_assist_status"
+
+# Camera Configuration
 camera:
-  # This config is for the forward camera
   forward:
     camera_source: "realsense"
     device_name: "Intel RealSense D435"
@@ -12,7 +47,6 @@ camera:
     video_output_file: 'forward_view.mp4'
     use_display: false
   
-  # This config is for the reverse camera
   reverse:
     camera_source: "realsense"
     device_name: "Intel RealSense D415"
@@ -22,24 +56,15 @@ camera:
     video_output_file: 'reverse_view.mp4'
     use_display: false
 
-zmq:
-  # IPC URLs for communication
-  hmi_url: "ipc:///tmp/hmi.ipc"
-  hmi_direction_topic: "hmi_direction"
-  
-  steer_url: "ipc:///tmp/teleop_cmd.ipc"
-  steer_topic: "lane_assist_angle"
-  
-  frame_url: "ipc:///tmp/cam_frame.ipc"
-  frame_topic: "cam_frame"
-  
-  frame_url_reverse: "ipc:///tmp/cam_frame_reverse.ipc"
-  frame_topic_reverse: "cam_frame_reverse"
+# ArUco Detection Configuration
+aruco:
+  frame_width: 640
+  frame_height: 480
+  calibration_file: "calibrationc270.yaml"
+  camera_height_m: 1.5
+  known_marker_width_m: 0.1
 
-  sensor_url: "ipc:///tmp/sensor_data.ipc"
-  sensor_topic: "sensor_data"
-
-
+# Lane Detection Parameters
 lane_detection:
   hsv_lower: [0, 0, 230]
   hsv_upper: [200, 20, 255]
@@ -49,6 +74,7 @@ lane_detection:
   pixels_to_meters: 0.00725
   segments: 5
 
+# Stanley Controller Parameters
 stanley_controller:
   gain: 0.5
   speed_epsilon: 0.000001
@@ -56,3 +82,24 @@ stanley_controller:
   max_speed: 1.0
   kcte: 0.5
   khe: 0.5
+
+# Vehicle Parameters
+vehicle_params:
+  rpm_to_mps_factor: 0.0015
+  max_speed_rpm: 1000.0
+  speed_ramp_rate: 500
+  brake_ramp_rate: 50
+  max_brake_force: 100
+  distance_threshold: 0.2
+
+# HMI Configuration
+hmi:
+  com_port: '/dev/ttyTHS1'
+  baud_rate: 115200
+
+# LLC Interface Configuration
+llc:
+  serial_port: '/dev/ttyACM0'
+  baudrate: 115200
+  steer_multiplier: -3.0
+  downsample_rate: 10
