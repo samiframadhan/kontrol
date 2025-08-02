@@ -191,7 +191,7 @@ class LineFollowingNode(ManagedNode):
     """
     A managed node for running the line following vision pipeline.
     """
-    def __init__(self, node_name: str, config_path: str = 'linedetection.yaml'):
+    def __init__(self, node_name: str, config_path: str = 'config.yaml'):
         super().__init__(node_name)
         self.config_path = config_path
         self.config = None
@@ -222,6 +222,10 @@ class LineFollowingNode(ManagedNode):
             self.hmi_sub_socket = self.context.socket(zmq.SUB)
             self.hmi_sub_socket.connect(zmq_config['hmi_sub_url'])
             self.hmi_sub_socket.setsockopt_string(zmq.SUBSCRIBE, zmq_config['hmi_direction_topic'])
+
+            self.sensor_sub_socket = self.context.socket(zmq.SUB)
+            self.sensor_sub_socket.connect(zmq_config['sensor_url'])
+            self.sensor_sub_socket.setsockopt_string(zmq.SUBSCRIBE, zmq_config['sensor_topic'])
             
             self.camera = ZMQCamera(cam_config, zmq_config, self.context)
 
@@ -354,7 +358,7 @@ class LineFollowingNode(ManagedNode):
 
 def main():
     setup_logging()
-    line_follower = LineFollowingNode(node_name="line_follower_node", config_path="linedetection.yaml")
+    line_follower = LineFollowingNode(node_name="line_follower_node", config_path="config.yaml")
     line_follower.run()
 
 if __name__ == "__main__":

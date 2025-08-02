@@ -21,6 +21,7 @@ STEER_MULTIPLIER = -3.0
 # --- ZMQ Configuration ---
 ZMQ_SUB_URL = "ipc:///tmp/llc.ipc" # Receives commands from teleop
 ZMQ_PUB_URL = "tcp://*:5556"         # Publishes sensor data
+ZMQ_SENSOR_TOPIC = "sensor_data"
 
 # --- Function Codes ---
 FUNC_STOP_STREAM = 0x00
@@ -213,7 +214,7 @@ def data_publisher(read_queue, context, shutdown_event, logger):
     while not shutdown_event.is_set():
         try:
             parsed_info = read_queue.get(timeout=1)
-            socket.send_string("sensor_data", flags=zmq.SNDMORE)
+            socket.send_string(ZMQ_SENSOR_TOPIC, flags=zmq.SNDMORE)
             socket.send_json(parsed_info)
             read_queue.task_done()
         except Empty:
