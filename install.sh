@@ -14,7 +14,7 @@ STANDARD_PYTHON_NODES=(
 )
 
 # Special handling for the camera node, which runs as multiple instances
-CAMERA_SCRIPT="camera.py"
+CAMERA_SCRIPT="camera_node.py"
 CAMERA_CONFIGS=(
     "camera.yaml"
     "camera_reverse.yaml"

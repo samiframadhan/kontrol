@@ -1,18 +1,26 @@
 #!/bin/bash
 
 # --- Configuration ---
-# This list must match the services created by the installation script.
-SERVICE_NAMES=(
-    "aruco.service"
-    "control.service"
-    "hmi_node.service"
-    "linefollowing_node.service" # Corrected service name
-    "llc_interface.service"
-    "orchestrator.service"
-    "camera.service"
-    "camera_reverse.service"
-)
+# This configuration MUST match install.sh to ensure the correct services are removed.
 VENV_NAME=".venv"
+
+# List of standard nodes from the installer
+STANDARD_PYTHON_NODES=(
+    "aruco.py"
+    "control.py"
+    "hmi_node.py"
+    "linefollowing_node.py"
+    "llc_interface.py"
+    "orchestrator.py"
+)
+
+# Special handling for the camera node from the installer
+CAMERA_CONFIGS=(
+    "camera.yaml"
+    "camera_reverse.yaml"
+)
+
+# --- Boilerplate ---
 SERVICE_FILES_DIR="/etc/systemd/system"
 
 # --- 0. Check for Sudo/Root Privileges ---
@@ -25,9 +33,29 @@ fi
 echo "✅ Sudo permissions confirmed."
 echo
 
+# --- Generate the list of all services to be managed ---
+echo "--- Determining which services to manage based on install script logic ---"
+ALL_SERVICES=()
+
+# Generate service names for standard nodes
+for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
+    ALL_SERVICES+=("${node_script%.py}.service")
+done
+
+# Generate service names for camera nodes
+for config_file in "${CAMERA_CONFIGS[@]}"; do
+    # This logic exactly matches the service name creation in install.sh
+    service_name="camera_${config_file%.yaml}.service"
+    ALL_SERVICES+=("$service_name")
+done
+
+echo "The following services will be uninstalled:"
+printf "  - %s\n" "${ALL_SERVICES[@]}"
+echo
+
 # --- 1. Stop and Disable Systemd Services ---
 echo "--- Stopping and disabling system services... ---"
-for service_name in "${SERVICE_NAMES[@]}"; do
+for service_name in "${ALL_SERVICES[@]}"; do
     service_file_path="$SERVICE_FILES_DIR/$service_name"
 
     if [ -f "$service_file_path" ]; then
@@ -43,7 +71,7 @@ echo
 
 # --- 2. Remove Systemd Service Files ---
 echo "--- Removing service files... ---"
-for service_name in "${SERVICE_NAMES[@]}"; do
+for service_name in "${ALL_SERVICES[@]}"; do
     service_file_path="$SERVICE_FILES_DIR/$service_name"
 
     if [ -f "$service_file_path" ]; then
@@ -63,6 +91,7 @@ echo
 # --- 4. Optionally Remove Virtual Environment ---
 if [ -d "$VENV_NAME" ]; then
     echo "--- Optional: Remove Virtual Environment ---"
+    # Run the prompt as the original user to avoid permission issues with read
     sudo -u "${SUDO_USER:-$(whoami)}" bash -c "read -p \"Do you want to permanently delete the '$VENV_NAME' directory? (y/N) \" -n 1 -r; echo; if [[ \$REPLY =~ ^[Yy]$ ]]; then exit 0; else exit 1; fi"
     if [ $? -eq 0 ]; then
         echo "Deleting virtual environment directory: $VENV_NAME"
