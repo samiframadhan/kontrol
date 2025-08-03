@@ -13,8 +13,6 @@ services=(
   "linefollowing_node.service"
   "llc_interface.service"
   "orchestrator.service"
-  "camera_forward.service"
-  "camera_reverse.service"
 )
 
 echo "--- Starting to restart services ---"
@@ -33,9 +31,8 @@ done
 echo "--- All services have been restarted. ---"
 
 # You can optionally add a command to check the status of all services afterwards
-# echo "--- Current status of services: ---"
-# for service in "${services[@]}"
-# do
-#   sudo systemctl status "${service}" --no-pager
-# done
-
+echo "--- Current status of services: ---"
+for service in "${services[@]}"
+do
+  sudo systemctl status "${service}" --no-pager
+done

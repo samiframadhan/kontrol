@@ -14,12 +14,6 @@ STANDARD_PYTHON_NODES=(
     "orchestrator.py"
 )
 
-# Special handling for the camera node from the installer
-CAMERA_TYPES=(
-    "forward"
-    "reverse"
-)
-
 # --- Boilerplate ---
 SERVICE_FILES_DIR="/etc/systemd/system"
 
@@ -40,13 +34,6 @@ ALL_SERVICES=()
 # Generate service names for standard nodes
 for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
     ALL_SERVICES+=("${node_script%.py}.service")
-done
-
-# Generate service names for camera nodes
-for camera_type in "${CAMERA_TYPES[@]}"; do
-    # This logic exactly matches the service name creation in install.sh
-    service_name="camera_${camera_type}.service"
-    ALL_SERVICES+=("$service_name")
 done
 
 echo "The following services will be uninstalled:"

@@ -13,13 +13,6 @@ STANDARD_PYTHON_NODES=(
     "orchestrator.py"
 )
 
-# Special handling for the camera node, which runs as multiple instances
-CAMERA_SCRIPT="camera_node.py"
-CAMERA_TYPES=(
-    "forward"
-    "reverse"
-)
-
 # --- Boilerplate ---
 SERVICE_FILES_DIR="/etc/systemd/system"
 PROJECT_DIR=$(pwd)
@@ -87,32 +80,6 @@ WantedBy=multi-user.target
 EOL
 done
 
-# --- Create services for camera node instances ---
-for camera_type in "${CAMERA_TYPES[@]}"; do
-    service_name="camera_${camera_type}.service"
-    service_file_path="$SERVICE_FILES_DIR/$service_name"
-    venv_python_path="$PROJECT_DIR/$VENV_NAME/bin/python"
-    script_path="$PROJECT_DIR/$CAMERA_SCRIPT"
-
-    echo "Creating service file: $service_file_path"
-    tee "$service_file_path" > /dev/null << EOL
-[Unit]
-Description=Kontrol Camera Service for ${camera_type} camera
-After=network.target
-
-[Service]
-User=$RUN_AS_USER
-Group=$RUN_AS_GROUP
-WorkingDirectory=$PROJECT_DIR
-ExecStart=$venv_python_path $script_path --camera-type ${camera_type}
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOL
-done
-
 echo
 echo "Reloading systemd daemon and enabling services..."
 systemctl daemon-reload
@@ -121,9 +88,6 @@ systemctl daemon-reload
 ALL_SERVICES=()
 for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
     ALL_SERVICES+=("${node_script%.py}.service")
-done
-for camera_type in "${CAMERA_TYPES[@]}"; do
-    ALL_SERVICES+=("camera_${camera_type}.service")
 done
 
 for service_name in "${ALL_SERVICES[@]}"; do
