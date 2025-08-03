@@ -353,16 +353,16 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                     self.is_reverse = msg.decode('utf-8') == 'reverse'
 
             # Update current speed from sensor data
-            # if self.sensor_sub_socket in socks:
-            #     topic, sensor_data_json = self.sensor_sub_socket.recv_multipart()
-            #     try:
-            #         import json
-            #         sensor_data = json.loads(sensor_data_json.decode('utf-8'))
-            #         self.current_speed_rpm = sensor_data.get('rpm', 0.0)
-            #         self.last_sensor_update = time.time()
-            #         self.logger.info(f"Current speed updated: {self.current_speed_rpm} RPM")
-            #     except (json.JSONDecodeError, KeyError) as e:
-            #         self.logger.warning(f"Failed to parse sensor data: {e}")
+            if self.sensor_sub_socket in socks:
+                topic, sensor_data_json = self.sensor_sub_socket.recv_multipart()
+                try:
+                    import json
+                    sensor_data = json.loads(sensor_data_json.decode('utf-8'))
+                    self.current_speed_rpm = sensor_data.get('rpm', 0.0)
+                    self.last_sensor_update = time.time()
+                    self.logger.info(f"Current speed updated: {self.current_speed_rpm} RPM")
+                except (json.JSONDecodeError, KeyError) as e:
+                    self.logger.warning(f"Failed to parse sensor data: {e}")
             
             # Check if sensor data is stale (use fallback speed)
             # if time.time() - self.last_sensor_update > 1.0:  # 1 second timeout
@@ -383,7 +383,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             # Convert RPM to m/s for Stanley controller (approximate conversion)
             current_speed_ms = abs(self.current_speed_rpm) * self.vehicle_params['rpm_to_mps_factor']
             current_speed_kmh = current_speed_ms * 3.6
-
 
             # Calculate desired velocity
             desired_speed_ms = StanleyController.calculate_velocity(
@@ -410,7 +409,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             # Send steering command and desired velocity via ZMQ
             command = steering_command_pb2.SteeringCommand()
             command.auto_steer_angle = steering_angle_deg
-            command.speed = desired_speed_rpm  # Add this field to your protobuf
+            command.speed = desired_speed_rpm
             serialized_command = command.SerializeToString()
             self.pub_socket.send_string(self.get_zmq_topic('steering_cmd_topic'), flags=zmq.SNDMORE)
             self.pub_socket.send(serialized_command)
