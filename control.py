@@ -31,6 +31,7 @@ class ControlNode(ManagedNode, ConfigMixin):
         ConfigMixin.__init__(self, config_path)
         
         self.hmi_sub = None
+        self.hmi_sub_direction = None
         self.steer_sub = None
         self.distance_sub = None
         self.llc_pub = None
@@ -56,6 +57,10 @@ class ControlNode(ManagedNode, ConfigMixin):
             self.hmi_sub.connect(self.get_zmq_url('hmi_cmd_url'))
             self.hmi_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_cmd_topic'))
 
+            self.hmi_sub_direction = self.context.socket(zmq.SUB)
+            self.hmi_sub_direction.connect(self.get_zmq_url('hmi_cmd_url'))
+            self.hmi_sub_direction.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_direction_topic'))
+
             self.steer_sub = self.context.socket(zmq.SUB)
             self.steer_sub.connect(self.get_zmq_url('steering_cmd_url'))
             self.steer_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('steering_cmd_topic'))
@@ -69,6 +74,7 @@ class ControlNode(ManagedNode, ConfigMixin):
 
             # Register all sockets with poller
             self.control_poller.register(self.hmi_sub, zmq.POLLIN)
+            self.control_poller.register(self.hmi_sub_direction, zmq.POLLIN)
             self.control_poller.register(self.steer_sub, zmq.POLLIN)
             self.control_poller.register(self.distance_sub, zmq.POLLIN)
             
@@ -120,9 +126,21 @@ class ControlNode(ManagedNode, ConfigMixin):
         while self.active_event.is_set():
             socks = dict(self.control_poller.poll(100))
 
+            if self.hmi_sub_direction in socks:
+                topic, msg = self.hmi_sub_direction.recv_multipart()
+                direction = msg.decode('utf-8')
+                self.logger.info(f"Received HMI direction command on topic {topic.decode('utf-8')}: {direction}")
+                if direction == "reverse":
+                    self.is_reverse = True
+                elif direction == "forward":
+                    self.is_reverse = False
+                else:
+                    self.logger.warning(f"Unknown direction command: {direction}")
+            
             if self.hmi_sub in socks:
                 topic, msg = self.hmi_sub.recv_multipart()
                 command = msg.decode('utf-8')
+                self.logger.info(f"Received HMI command on topic {topic.decode('utf-8')}: {command}")
                 if command == "START" and not self.is_running:
                     self.is_running = True
                     self.time_stopped = None
@@ -144,14 +162,17 @@ class ControlNode(ManagedNode, ConfigMixin):
                     distance = self.last_received_distance
                     log_message = f"DATA: Jarak terakhir {distance:.2f} m. "
                     if distance < DISTANCE_THRESHOLD:
-                        # log_message += "KEPUTUSAN: Peringatan, jarak terlalu dekat!"
                         self.logger.warning(log_message)
                     else:
-                        # log_message += "KEPUTUSAN: Aman."
                         self.logger.info(log_message)
                     self.last_received_distance = None
                 else:
                     self.logger.info("STATUS: Tidak ada data jarak baru yang masuk.")
+
+                self.logger.info(f"STATUS: Kendaraan {'berjalan' if self.is_running else 'berhenti'}, "
+                                 f"kecepatan {self.current_speed_rpm:.2f} RPM, "
+                                 f"steer angle {self.current_steer_angle:.2f} derajat, "
+                                 f"reverse {'aktif' if self.is_reverse else 'non-aktif'}.")
                 self.last_log_time = current_time
             if self.distance_sub in socks:
                 topic, msg = self.distance_sub.recv_multipart()
@@ -167,7 +188,7 @@ class ControlNode(ManagedNode, ConfigMixin):
                 topic, serialized_data = self.steer_sub.recv_multipart()
                 command = steering_command_pb2.SteeringCommand()
                 command.ParseFromString(serialized_data)
-                self.logger.info(f"Received steering command: {command.auto_steer_angle} degrees; speed: {command.speed} RPM")
+                # self.logger.info(f"Received steering command: {command.auto_steer_angle} degrees; speed: {command.speed} RPM")
                 self.current_steer_angle = command.auto_steer_angle
                 self.desired_speed_rpm = command.speed
                 #TODO: Stream camera overlay
@@ -176,17 +197,20 @@ class ControlNode(ManagedNode, ConfigMixin):
             if self.is_running:
                 if self.time_started is not None:
                     elapsed_time = time.time() - self.time_started
-                    self.current_speed_rpm = min(self.desired_speed_rpm, elapsed_time * SPEED_RAMP_RATE)
+                    self.current_speed_rpm = min(abs(self.desired_speed_rpm), elapsed_time * SPEED_RAMP_RATE)
                     if self.is_reverse:
                         self.current_speed_rpm *= -1
+                    self.logger.info(f"Current speed: {self.current_speed_rpm:.2f} RPM; elapsed time: {elapsed_time:.2f}. seconds")
             else:
                 self.current_speed_rpm = 0
                 if self.time_stopped is not None:
                     elapsed_time = time.time() - self.time_stopped
                     brake_force = min(MAX_BRAKE_FORCE, int(elapsed_time * BRAKE_RAMP_RATE))
+                    self.logger.info(f"Brake force applied: {brake_force} N; time stopped: {elapsed_time:.2f} seconds ago.")
 
             self._send_llc_command(self.current_speed_rpm, self.current_steer_angle, brake_force)
             time.sleep(0.02)
+            # self.logger.info(f"Control loop iteration: speed={self.current_speed_rpm} RPM, steer={self.current_steer_angle} degrees, brake={brake_force} N")
         self.logger.info("Control loop stopped.")
     
     def _send_llc_command(self, speed, steer, brake):

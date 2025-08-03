@@ -347,7 +347,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
 
             if self.hmi_sub_socket in socks:
                 topic, msg = self.hmi_sub_socket.recv_multipart()
-                if topic == self.get_zmq_topic('hmi_direction_topic'):
+                self.logger.info(f"Received HMI command on topic {topic.decode('utf-8')}: {msg.decode('utf-8')}")
+                if topic.decode('utf-8') == self.get_zmq_topic('hmi_direction_topic'):
                     self.logger.info(f"HMI command received: {msg.decode('utf-8')}")
                     self.is_reverse = msg.decode('utf-8') == 'reverse'
 
@@ -373,16 +374,12 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 if rev_frame is None:
                     continue
                 lane_data = self.lane_detector.process_frame(rev_frame)
-                self.logger.info("Processing reverse camera frame.")
             else:
                 if forward_frame is None:
                     continue
                 lane_data = self.lane_detector.process_frame(forward_frame)
-                self.logger.info("Processing forward camera frame.")
 
-            # self.result_writer.write(lane_data['warped_image'])
             # Convert RPM to m/s for Stanley controller (approximate conversion)
-            # This is a rough conversion - you may need to calibrate this based on your vehicle
             current_speed_ms = abs(self.current_speed_rpm) * self.vehicle_params['rpm_to_mps_factor']
             current_speed_kmh = current_speed_ms * 3.6
 

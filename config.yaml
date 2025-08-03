@@ -19,7 +19,7 @@ zmq:
   camera_frame_reverse_topic: "cam_frame_reverse"
   
   # HMI commands
-  hmi_cmd_url: "tcp://localhost:5557"
+  hmi_cmd_url: "tcp://localhost:5527"
   hmi_cmd_topic: "hmi_cmd"
   hmi_direction_topic: "hmi_direction"
   

@@ -57,7 +57,7 @@ class HMINode(ManagedNode, ConfigMixin):
                         status = self.ser.read(1)
                         direction = "reverse" if status == b'\x01' else "forward"
                         self.logger.info(f"Received DIRECTION command from HMI: {direction}.")
-                        self.pub_socket.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
+                        self.pub_socket.send_string(self.get_zmq_topic('hmi_direction_topic'), flags=zmq.SNDMORE)
                         self.pub_socket.send_string(direction)
                         self.ser.reset_input_buffer()
                         self.logger.info("Serial buffer emptied after DIRECTION command.")
@@ -66,7 +66,7 @@ class HMINode(ManagedNode, ConfigMixin):
 
                 except UnicodeDecodeError:
                     self.logger.warning("Received non-UTF-8 characters from serial port.")
-            time.sleep(0.1)
+            time.sleep(0.02)
         self.logger.info("HMI serial loop stopped.")
 
     def on_activate(self) -> bool:
