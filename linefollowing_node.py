@@ -1,4 +1,4 @@
-# linefollowing_node.py (Updated with speed feedback and velocity output)
+# linefollowing_node.py (Updated with optional video writer)
 import cv2
 import datetime
 import math
@@ -203,11 +203,11 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         self.pub_socket = None
         self.hmi_sub_socket = None
         self.sensor_sub_socket = None
-        self.result_writer = None
+        self.result_writer = None  # Initialize to None
         self.is_reverse = False
-        self.current_speed_rpm = 0.0  # Current vehicle speed from sensor data
+        self.current_speed_rpm = 0.0
         self.last_sensor_update = 0
-        self.rpm_to_ms = 0.0  # Conversion factor from RPM to m/s
+        self.rpm_to_ms = 0.0
         self.vehicle_params = None
         
         self.processing_thread = None
@@ -217,25 +217,21 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         """Load configuration and initialize all components."""
         self.logger.info("Configuring Line Following Node...")
         try:
-            cam_config = self.get_camera_config('forward')  # Use forward camera config
-            cam_config_reverse = self.get_camera_config('reverse')  # Use reverse camera config
+            cam_config = self.get_camera_config('forward')
+            cam_config_reverse = self.get_camera_config('reverse')
             self.vehicle_params = self.get_section_config('vehicle_params')
             
-            # Setup ZMQ Publisher for steering commands (now includes velocity)
             self.pub_socket = self.context.socket(zmq.PUB)
             self.pub_socket.bind(self.get_zmq_url('steering_cmd_url'))
             
-            # Setup ZMQ Subscriber for HMI direction commands
             self.hmi_sub_socket = self.context.socket(zmq.SUB)
             self.hmi_sub_socket.connect(self.get_zmq_url('hmi_cmd_url'))
             self.hmi_sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_direction_topic'))
 
-            # Setup ZMQ Subscriber for sensor data (speed feedback)
             self.sensor_sub_socket = self.context.socket(zmq.SUB)
             self.sensor_sub_socket.connect(self.get_zmq_url('sensor_data_url'))
             self.sensor_sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('sensor_data_topic'))
             
-            # Setup camera as ZMQ subscriber to camera frames
             zmq_camera_config = {
                 'sub_frame_url': self.get_zmq_url('camera_frame_url'),
                 'sub_frame_topic': self.get_zmq_topic('camera_frame_topic')
@@ -248,20 +244,23 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             }
             self.camera_reverse = ZMQCamera(cam_config, zmq_camera_reverse_config, self.context)
 
-            # Setup lane detector
             use_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
             self.logger.info(f"CUDA Available: {use_cuda}. {'Using GPU.' if use_cuda else 'Running on CPU.'}")
             self.lane_detector = LaneDetector(self.config, use_cuda)
             self.visualizer = Visualizer()
             
-            # Setup video writer
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            video_filename = f"{cam_config['video_output_file'].rsplit('.', 1)[0]}_{timestamp}.mp4"
-            self.result_writer = cv2.VideoWriter(
-                video_filename, fourcc, cam_config['frame_fps'],
-                (cam_config['frame_width'] * 2, cam_config['frame_height'])
-            )
+            # Conditionally setup video writer based on a single config parameter
+            if self.config.get('enable_video_writer', False):
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                video_filename = f"{cam_config['video_output_file'].rsplit('.', 1)[0]}_{timestamp}.mp4"
+                self.result_writer = cv2.VideoWriter(
+                    video_filename, fourcc, cam_config['frame_fps'],
+                    (cam_config['frame_width'] * 2, cam_config['frame_height'])
+                )
+                self.logger.info(f"Video writer enabled. Saving results to {video_filename}")
+            else:
+                self.logger.info("Video writer is disabled. Results will not be saved to a file.")
             
             self.logger.info("Line Following Node configuration successful.")
             return True
@@ -343,7 +342,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             poller.register(self.camera_reverse.socket, zmq.POLLIN)
 
         while self.active_event.is_set() and not self.shutdown_event.is_set():
-            # Check for HMI direction updates and sensor data
             socks = dict(poller.poll(100))
             if not socks:
                 continue
@@ -355,7 +353,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                     self.logger.info(f"HMI command received: {msg.decode('utf-8')}")
                     self.is_reverse = msg.decode('utf-8') == 'reverse'
 
-            # Update current speed from sensor data
             if self.sensor_sub_socket in socks:
                 topic, sensor_data_json = self.sensor_sub_socket.recv_multipart()
                 try:
@@ -367,11 +364,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 except (json.JSONDecodeError, KeyError) as e:
                     self.logger.warning(f"Failed to parse sensor data: {e}")
             
-            # Check if sensor data is stale (use fallback speed)
-            # if time.time() - self.last_sensor_update > 1.0:  # 1 second timeout
-            #     self.current_speed_rpm = sc_config.get('assumed_speed_for_calc', 500.0)
-            
-            # Process frame for lane detection
             rev_frame = self.camera_reverse.get_frame()
             forward_frame = self.camera.get_frame()
             if self.is_reverse:
@@ -383,11 +375,9 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                     continue
                 lane_data = self.lane_detector.process_frame(forward_frame)
 
-            # Convert RPM to m/s for Stanley controller (approximate conversion)
             current_speed_ms = abs(self.current_speed_rpm) * self.vehicle_params['rpm_to_mps_factor']
             current_speed_kmh = current_speed_ms * 3.6
 
-            # Calculate desired velocity
             desired_speed_ms = StanleyController.calculate_velocity(
                 lane_data['cross_track_error'],
                 lane_data['heading_error'],
@@ -397,7 +387,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 self.is_reverse
             )
 
-            # Calculate steering angle using Stanley controller with real speed
             steering_angle_rad = StanleyController.calculate_steering(
                 lane_data['cross_track_error'],
                 lane_data['heading_error'],
@@ -409,7 +398,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             steering_angle_deg = math.degrees(steering_angle_rad)
             desired_speed_rpm = desired_speed_ms / self.vehicle_params['rpm_to_mps_factor']
 
-            # Send steering command and desired velocity via ZMQ
             command = steering_command_pb2.SteeringCommand()
             command.auto_steer_angle = steering_angle_deg
             command.speed = desired_speed_rpm
@@ -417,7 +405,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.pub_socket.send_string(self.get_zmq_topic('steering_cmd_topic'), flags=zmq.SNDMORE)
             self.pub_socket.send(serialized_command)
 
-            # Create visualization
             warped_view = lane_data.get('warped_image', np.zeros_like(forward_frame))
             annotated_warped = self.visualizer.draw_pipeline_data(
                 warped_view, lane_data, steering_angle_rad, 
@@ -425,7 +412,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             )
             stacked_output = np.hstack((forward_frame, annotated_warped))
             
-            # Display if enabled
             if cam_config.get('use_display', False):
                 cv2.imshow('Lane Following View', stacked_output)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -433,10 +419,10 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                     self.shutdown_event.set()
                     break
             
-            # Write to video file
-            self.result_writer.write(stacked_output)
+            # Write to video file only if the writer is enabled
+            if self.result_writer:
+                self.result_writer.write(stacked_output)
             
-            # Log performance metrics
             frame_count += 1
             if frame_count % 30 == 0:
                 elapsed_time = time.time() - start_time

@@ -79,7 +79,7 @@ lane_detection:
   hsv_upper: [200, 20, 255]
   perspective_warp: 0.35
   min_contour_area: 200
-  max_contour_area: 550
+  max_contour_area: 600
   pixels_to_meters: 0.00725
   segments: 5
 

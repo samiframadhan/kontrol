@@ -243,30 +243,50 @@ class LLCInterfaceNode(ManagedNode, ConfigMixin):
             return None
 
     def _serial_io_thread(self):
-        """Handle serial I/O operations."""
+        """Handle serial I/O operations based on a time difference."""
         self.logger.info("Serial I/O thread started.")
+        
+        # Define the desired interval between operations in seconds
+        # This replaces the need for time.sleep(0.005)
+        io_interval = 0.005 
+        last_io_time = time.time()
+
         while not self.shutdown_event.is_set():
             try:
-                if self.ser.in_waiting > 0:
-                    if self.ser.read(1) == bytes([self.HEADER]):
-                        f_code = self.ser.read(1)
-                        if f_code == bytes([self.FUNC_INCOMING_DATA]):
-                            packet_data = self.ser.read(32)  # Data + Checksum
-                            if len(packet_data) == 32:
-                                parsed_info = self._parse_stream_data(packet_data)
-                                if parsed_info:
-                                    self.read_queue.put(parsed_info)
-                try:
-                    packet_to_send = self.send_queue.get_nowait()
-                    self.ser.write(packet_to_send)
-                    self.send_queue.task_done()
-                except Empty:
-                    pass
-                time.sleep(0.005)
+                current_time = time.time()
+                # Check if the desired interval has passed
+                if current_time - last_io_time >= io_interval:
+                    last_io_time = current_time 
+
+                    # --- Reading from serial ---
+                    if self.ser.in_waiting > 0:
+                        if self.ser.read(1) == bytes([self.HEADER]):
+                            f_code = self.ser.read(1)
+                            if f_code == bytes([self.FUNC_INCOMING_DATA]):
+                                packet_data = self.ser.read(32)  # Data + Checksum
+                                if len(packet_data) == 32:
+                                    parsed_info = self._parse_stream_data(packet_data)
+                                    if parsed_info:
+                                        self.read_queue.put(parsed_info)
+                    
+                    # --- Writing to serial ---
+                    try:
+                        # Process one packet from the queue in each interval if available
+                        packet_to_send = self.send_queue.get_nowait()
+                        self.ser.write(packet_to_send)
+                        self.send_queue.task_done()
+                    except Empty:
+                        pass
+
             except (serial.SerialException, IOError) as e:
                 self.logger.error(f"Serial error in I/O thread: {e}", exc_info=True)
                 self.shutdown_event.set()
                 break
+            
+            # A very short sleep to prevent the loop from consuming 100% CPU 
+            # when there's nothing to do. This is a non-blocking "yield".
+            time.sleep(0.001) 
+            
         self.logger.info("Serial I/O thread finished.")
 
     def _command_subscriber(self):
@@ -345,15 +365,15 @@ class LLCInterfaceNode(ManagedNode, ConfigMixin):
         self.logger.info("Control sender thread finished.")
 
 if __name__ == "__main__":
-    log_filename = f"llc_managed_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    logging.basicConfig(
-        level=logging.DEBUG, # Change to DEBUG to see command and data logs
-        format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_filename),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
+    # log_filename = f"llc_managed_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    # logging.basicConfig(
+    #     level=logging.DEBUG, # Change to DEBUG to see command and data logs
+    #     format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s',
+    #     handlers=[
+    #         logging.FileHandler(log_filename),
+    #         logging.StreamHandler(sys.stdout)
+    #     ]
+    # )
     
     llc_node = LLCInterfaceNode()
     llc_node.run()
