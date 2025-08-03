@@ -1,4 +1,4 @@
-# linefollowing_node.py (Updated with optional video writer)
+# linefollowing_node.py (Updated with optional frame publisher)
 import cv2
 import datetime
 import math
@@ -7,10 +7,14 @@ import zmq
 import time
 import logging
 import threading
+import json
 from pyrealsense2 import pyrealsense2 as rs
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+
+# Import the protobuf definitions
 import steering_command_pb2
+import frame_data_pb2  # <-- IMPORT THE NEW PROTOBUF DEFINITION
 
 from managednode import ManagedNode
 from config_mixin import ConfigMixin
@@ -25,7 +29,6 @@ class StanleyController:
     @staticmethod
     def calculate_steering(cross_track_error, heading_error, speed, k, epsilon, is_reverse):
         if is_reverse:
-            cross_track_error = -cross_track_error
             cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
             return -(heading_error + cross_track_term)
         else:
@@ -35,13 +38,10 @@ class StanleyController:
     @staticmethod
     def calculate_velocity(cross_track_error, heading_error, speed, k_cte, k_heading, is_reverse):
         """Calculate the desired velocity based on cross track error and heading error."""
-        # Reduce speed based on errors to maintain stability
         speed_factor = 1.0 / (1 + k_cte * abs(cross_track_error) + k_heading * abs(heading_error))
         desired_speed = speed * speed_factor
-        
         if is_reverse:
             desired_speed *= -1
-            
         return desired_speed
 
 class LaneDetector:
@@ -89,7 +89,6 @@ class LaneDetector:
     def _calculate_perpendicular_error(self, m, b, H, W):
         pixels_per_meter = 1.0 / self.ld_config.get('pixels_to_meters', 0.0035) 
         axle_offset_m = self.ld_config.get('axle_to_bottom_frame_m', 0.0)
-        
         y_offset_pixels = int(axle_offset_m * pixels_per_meter)
         virtual_axle_point = (W // 2, H - y_offset_pixels)
         
@@ -113,7 +112,6 @@ class LaneDetector:
         return error_pixels, intersection_point
 
     def process_frame(self, img):
-        # [Process frame implementation remains the same]
         H, W = img.shape[:2]
         M = self._get_perspective_transform((H, W))
 
@@ -203,7 +201,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         self.pub_socket = None
         self.hmi_sub_socket = None
         self.sensor_sub_socket = None
-        self.result_writer = None  # Initialize to None
+        self.result_writer = None
+        self.frame_pub_socket = None # <-- NEW: SOCKET FOR PUBLISHING FRAMES
         self.is_reverse = False
         self.current_speed_rpm = 0.0
         self.last_sensor_update = 0
@@ -218,20 +217,23 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         self.logger.info("Configuring Line Following Node...")
         try:
             cam_config = self.get_camera_config('forward')
-            cam_config_reverse = self.get_camera_config('reverse')
             self.vehicle_params = self.get_section_config('vehicle_params')
             
+            # Steering command publisher
             self.pub_socket = self.context.socket(zmq.PUB)
             self.pub_socket.bind(self.get_zmq_url('steering_cmd_url'))
             
+            # HMI command subscriber
             self.hmi_sub_socket = self.context.socket(zmq.SUB)
             self.hmi_sub_socket.connect(self.get_zmq_url('hmi_cmd_url'))
             self.hmi_sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_direction_topic'))
 
+            # Sensor data subscriber
             self.sensor_sub_socket = self.context.socket(zmq.SUB)
             self.sensor_sub_socket.connect(self.get_zmq_url('sensor_data_url'))
             self.sensor_sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('sensor_data_topic'))
             
+            # ZMQ Camera setup
             zmq_camera_config = {
                 'sub_frame_url': self.get_zmq_url('camera_frame_url'),
                 'sub_frame_topic': self.get_zmq_topic('camera_frame_topic')
@@ -249,7 +251,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.lane_detector = LaneDetector(self.config, use_cuda)
             self.visualizer = Visualizer()
             
-            # Conditionally setup video writer based on a single config parameter
+            # Conditional video writer
             if self.vehicle_params.get('enable_video_recording', False):
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -259,9 +261,16 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                     (cam_config['frame_width'] * 2, cam_config['frame_height'])
                 )
                 self.logger.info(f"Video writer enabled. Saving results to {video_filename}")
-            else:
-                self.logger.info("Video writer is disabled. Results will not be saved to a file.")
             
+            # <-- NEW: Conditionally setup frame publisher
+            if self.vehicle_params.get('enable_frame_publishing', False):
+                self.frame_pub_socket = self.context.socket(zmq.PUB)
+                publish_url = self.get_zmq_url('frame_publish_url')
+                self.frame_pub_socket.bind(publish_url)
+                self.logger.info(f"Frame publishing enabled. Broadcasting on {publish_url}")
+            else:
+                self.logger.info("Frame publishing is disabled.")
+
             self.logger.info("Line Following Node configuration successful.")
             return True
             
@@ -270,7 +279,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             return False
 
     def on_activate(self) -> bool:
-        """Start the camera and the processing loop."""
         self.logger.info("Activating Line Following Node...")
         try:
             self.camera.start()
@@ -288,7 +296,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             return False
 
     def on_deactivate(self) -> bool:
-        """Stop the processing loop and camera."""
         self.logger.info("Deactivating Line Following Node...")
         try:
             self.active_event.clear()
@@ -305,7 +312,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             return False
 
     def on_shutdown(self) -> bool:
-        """Clean up all resources."""
         self.logger.info("Shutting down Line Following Node...")
         if self.state == "active":
             self.on_deactivate()
@@ -319,6 +325,9 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 self.hmi_sub_socket.close()
             if self.sensor_sub_socket:
                 self.sensor_sub_socket.close()
+            # <-- NEW: Close the frame publisher socket
+            if self.frame_pub_socket:
+                self.frame_pub_socket.close()
             cv2.destroyAllWindows()
             self.logger.info("Line Following Node shutdown successful.")
             return True
@@ -348,86 +357,86 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
 
             if self.hmi_sub_socket in socks:
                 topic, msg = self.hmi_sub_socket.recv_multipart()
-                self.logger.info(f"Received HMI command on topic {topic.decode('utf-8')}: {msg.decode('utf-8')}")
-                if topic.decode('utf-8') == self.get_zmq_topic('hmi_direction_topic'):
-                    self.logger.info(f"HMI command received: {msg.decode('utf-8')}")
-                    self.is_reverse = msg.decode('utf-8') == 'reverse'
+                self.is_reverse = msg.decode('utf-8') == 'reverse'
 
             if self.sensor_sub_socket in socks:
                 topic, sensor_data_json = self.sensor_sub_socket.recv_multipart()
                 try:
-                    import json
                     sensor_data = json.loads(sensor_data_json.decode('utf-8'))
                     self.current_speed_rpm = sensor_data.get('rpm', 0.0)
                     self.last_sensor_update = time.time()
-                    self.logger.info(f"Current speed updated: {self.current_speed_rpm} RPM")
                 except (json.JSONDecodeError, KeyError) as e:
                     self.logger.warning(f"Failed to parse sensor data: {e}")
             
-            rev_frame = self.camera_reverse.get_frame()
-            forward_frame = self.camera.get_frame()
-            if self.is_reverse:
-                if rev_frame is None:
-                    continue
-                lane_data = self.lane_detector.process_frame(rev_frame)
-            else:
-                if forward_frame is None:
-                    continue
-                lane_data = self.lane_detector.process_frame(forward_frame)
+            active_cam = self.camera_reverse if self.is_reverse else self.camera
+            frame = active_cam.get_frame()
+            if frame is None:
+                continue
+            
+            lane_data = self.lane_detector.process_frame(frame)
 
             current_speed_ms = abs(self.current_speed_rpm) * self.vehicle_params['rpm_to_mps_factor']
-            current_speed_kmh = current_speed_ms * 3.6
-
+            
             desired_speed_ms = StanleyController.calculate_velocity(
-                lane_data['cross_track_error'],
-                lane_data['heading_error'],
-                sc_config.get('max_speed', 1.0),
-                sc_config.get('velocity_k_cte', 2.0),
-                sc_config.get('velocity_k_heading', 1.0),
-                self.is_reverse
+                lane_data['cross_track_error'], lane_data['heading_error'],
+                sc_config.get('max_speed', 1.0), sc_config.get('velocity_k_cte', 2.0),
+                sc_config.get('velocity_k_heading', 1.0), self.is_reverse
             )
 
             steering_angle_rad = StanleyController.calculate_steering(
-                lane_data['cross_track_error'],
-                lane_data['heading_error'],
-                desired_speed_ms,
-                sc_config['gain'],
-                sc_config['speed_epsilon'],
-                self.is_reverse
+                lane_data['cross_track_error'], lane_data['heading_error'],
+                desired_speed_ms, sc_config['gain'], sc_config['speed_epsilon'], self.is_reverse
             )
-            steering_angle_deg = math.degrees(steering_angle_rad)
+            
             desired_speed_rpm = desired_speed_ms / self.vehicle_params['rpm_to_mps_factor']
 
             command = steering_command_pb2.SteeringCommand()
-            command.auto_steer_angle = steering_angle_deg
+            command.auto_steer_angle = math.degrees(steering_angle_rad)
             command.speed = desired_speed_rpm
             serialized_command = command.SerializeToString()
             self.pub_socket.send_string(self.get_zmq_topic('steering_cmd_topic'), flags=zmq.SNDMORE)
             self.pub_socket.send(serialized_command)
 
-            warped_view = lane_data.get('warped_image', np.zeros_like(forward_frame))
+            warped_view = lane_data.get('warped_image', np.zeros_like(frame))
             annotated_warped = self.visualizer.draw_pipeline_data(
                 warped_view, lane_data, steering_angle_rad, 
                 self.current_speed_rpm, desired_speed_rpm
             )
-            stacked_output = np.hstack((forward_frame, annotated_warped))
+            stacked_output = np.hstack((frame, annotated_warped))
             
             if cam_config.get('use_display', False):
                 cv2.imshow('Lane Following View', stacked_output)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
-                    self.logger.info("'q' pressed in display window, initiating shutdown.")
                     self.shutdown_event.set()
                     break
             
-            # Write to video file only if the writer is enabled
             if self.result_writer:
                 self.result_writer.write(stacked_output)
-            
+
+            # <-- NEW: Publish the stacked frame if enabled
+            if self.frame_pub_socket:
+                try:
+                    # Create and populate the protobuf message
+                    frame_msg = frame_data_pb2.FrameData()
+                    frame_msg.frame = stacked_output.tobytes()
+                    frame_msg.height = stacked_output.shape[0]
+                    frame_msg.width = stacked_output.shape[1]
+                    frame_msg.channels = stacked_output.shape[2]
+                    
+                    # Serialize and send
+                    serialized_frame = frame_msg.SerializeToString()
+                    self.frame_pub_socket.send_multipart([
+                        self.get_zmq_topic('frame_publish_topic').encode('utf-8'),
+                        serialized_frame
+                    ])
+                except Exception as e:
+                    self.logger.error(f"Failed to publish frame: {e}")
+
             frame_count += 1
             if frame_count % 30 == 0:
                 elapsed_time = time.time() - start_time
                 fps = frame_count / elapsed_time
-                self.logger.info(f"Processing FPS: {fps:.2f}, Current Speed: {self.current_speed_rpm:.1f} RPM, Target: {desired_speed_rpm:.1f} RPM")
+                self.logger.info(f"Processing FPS: {fps:.2f}")
         
         self.logger.info("Line Following processing loop terminated.")
 

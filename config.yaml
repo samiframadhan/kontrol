@@ -43,6 +43,9 @@ zmq:
   lane_status_url: "ipc:///tmp/lane_assist_status.ipc"
   lane_status_topic: "lane_assist_status"
 
+  frame_publish_url: "tcp://*:5553"
+  frame_publish_topic: "frame_data"
+
 # Camera Configuration
 camera:
   forward:
@@ -101,6 +104,7 @@ vehicle_params:
   max_brake_force: 100
   distance_threshold: 0.2
   enable_video_recording: false
+  enable_frame_publishing: true
 
 # HMI Configuration
 hmi:

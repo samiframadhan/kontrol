@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+// Defines the structure for sending a video frame over ZMQ.
+// This message includes the raw image data as bytes, along with its
+// dimensions (height, width, channels) to allow the subscriber
+// to reconstruct the image correctly.
+
+message FrameData {
+  bytes frame = 1;      // The raw byte data of the image frame.
+  int32 height = 2;     // The height of the image in pixels.
+  int32 width = 3;      // The width of the image in pixels.
+  int32 channels = 4;   // The number of color channels (e.g., 3 for BGR).
+}
