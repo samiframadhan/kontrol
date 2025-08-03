@@ -1,5 +1,6 @@
 # linefollowing_node.py (Updated with speed feedback and velocity output)
 import cv2
+import datetime
 import math
 import numpy as np
 import zmq
@@ -255,8 +256,10 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             
             # Setup video writer
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            video_filename = f"{cam_config['video_output_file'].rsplit('.', 1)[0]}_{timestamp}.mp4"
             self.result_writer = cv2.VideoWriter(
-                cam_config['video_output_file'], fourcc, cam_config['frame_fps'],
+                video_filename, fourcc, cam_config['frame_fps'],
                 (cam_config['frame_width'] * 2, cam_config['frame_height'])
             )
             
