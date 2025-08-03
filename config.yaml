@@ -46,6 +46,14 @@ zmq:
   frame_publish_url: "tcp://*:5553"
   frame_publish_topic: "frame_data"
 
+# Add this section to your config.yaml
+realsense_cameras:
+  forward_camera_name: 'Intel RealSense D435'  # The name of your forward-facing camera
+  reverse_camera_name: 'Intel RealSense D415'  # The name of your reverse-facing camera
+  frame_width: 640
+  frame_height: 480
+  frame_fps: 30
+
 # Camera Configuration
 camera:
   forward:

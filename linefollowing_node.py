@@ -1,4 +1,4 @@
-# linefollowing_node.py (Updated with optional frame publisher)
+# linefollowing_node.py (Updated to use pyrealsense2 directly for multi-cam)
 import cv2
 import datetime
 import math
@@ -8,32 +8,113 @@ import time
 import logging
 import threading
 import json
-from pyrealsense2 import pyrealsense2 as rs
+import pyrealsense2 as rs # <--- IMPORT PYREALSENSE2
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
 # Import the protobuf definitions
 import steering_command_pb2
-import frame_data_pb2  # <-- IMPORT THE NEW PROTOBUF DEFINITION
+import frame_data_pb2
 
 from managednode import ManagedNode
 from config_mixin import ConfigMixin
-from camera_node import ZMQCamera
 
 def setup_logging():
     """Configures the logging for the application."""
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
+# -------------------------------------------------------------------
+# --- NEW CLASS FOR MANAGING MULTIPLE REALSENSE CAMERAS -------------
+# -------------------------------------------------------------------
+class MultiRealSenseCamera:
+    """Manages multiple Intel RealSense cameras (e.g., D435 for forward, D415 for reverse)."""
+    def __init__(self, cam_config: dict):
+        self.config = cam_config
+        self.rs_ctx = rs.context()
+        self.pipelines = {}  # Using a dict to map 'forward'/'reverse' to pipelines
+        self.serial_numbers = {}  # To store found serial numbers
+
+        # Device identification from config
+        self.forward_cam_name = self.config.get('forward_camera_name', 'D435')
+        self.reverse_cam_name = self.config.get('reverse_camera_name', 'D415')
+        logging.info(f"Seeking Forward Cam: '{self.forward_cam_name}', Reverse Cam: '{self.reverse_cam_name}'")
+
+    def start(self):
+        logging.info("Starting RealSense cameras...")
+        devices = self.rs_ctx.query_devices()
+        
+        found_devs = {'forward': False, 'reverse': False}
+
+        for dev in devices:
+            dev_name = dev.get_info(rs.camera_info.name)
+            serial = dev.get_info(rs.camera_info.serial_number)
+            
+            cam_type = None
+            if self.forward_cam_name in dev_name and not found_devs['forward']:
+                cam_type = 'forward'
+            elif self.reverse_cam_name in dev_name and not found_devs['reverse']:
+                cam_type = 'reverse'
+
+            if cam_type:
+                logging.info(f"Found {cam_type} camera: {dev_name} (Serial: {serial})")
+                pipeline = rs.pipeline(self.rs_ctx)
+                cfg = rs.config()
+                cfg.enable_device(serial)
+                cfg.enable_stream(rs.stream.color, 
+                                  self.config['frame_width'], 
+                                  self.config['frame_height'], 
+                                  rs.format.bgr8, 
+                                  self.config['frame_fps'])
+                pipeline.start(cfg)
+                self.pipelines[cam_type] = pipeline
+                self.serial_numbers[cam_type] = serial
+                found_devs[cam_type] = True
+
+        if not found_devs['forward']:
+            logging.error(f"Forward RealSense device containing name '{self.forward_cam_name}' not found.")
+        if not found_devs['reverse']:
+            logging.error(f"Reverse RealSense device containing name '{self.reverse_cam_name}' not found.")
+        
+        if not all(found_devs.values()):
+             raise RuntimeError("Could not find all required RealSense devices. Check connection and config.")
+
+    def get_frame(self, is_reverse: bool):
+        cam_type = 'reverse' if is_reverse else 'forward'
+        
+        if cam_type not in self.pipelines:
+            logging.warning(f"Pipeline for '{cam_type}' camera not available.")
+            return None
+            
+        pipeline = self.pipelines[cam_type]
+        try:
+            # wait_for_frames() is a blocking call with a timeout
+            frames = pipeline.wait_for_frames(timeout_ms=1000)
+            color_frame = frames.get_color_frame()
+            if not color_frame:
+                logging.warning(f"No color frame received from {cam_type} camera.")
+                return None
+            return np.asanyarray(color_frame.get_data())
+        except Exception as e:
+            # This can happen if a camera is disconnected
+            logging.error(f"Error getting frame from {cam_type} camera: {e}")
+            return None
+
+    def stop(self):
+        logging.info("Stopping RealSense cameras.")
+        for cam_type, pipeline in self.pipelines.items():
+            try:
+                pipeline.stop()
+                logging.info(f"Pipeline for {cam_type} camera stopped.")
+            except Exception as e:
+                logging.error(f"Error stopping {cam_type} pipeline: {e}")
+        self.pipelines.clear()
+
 class StanleyController:
     """Calculates steering angle using the Stanley control method."""
     @staticmethod
     def calculate_steering(cross_track_error, heading_error, speed, k, epsilon, is_reverse):
-        if is_reverse:
-            cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
-            return -(heading_error + cross_track_term)
-        else:
-            cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
-            return heading_error + cross_track_term
+        cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
+        return heading_error + cross_track_term
     
     @staticmethod
     def calculate_velocity(cross_track_error, heading_error, speed, k_cte, k_heading, is_reverse):
@@ -188,21 +269,20 @@ class Visualizer:
         return image
 
 class LineFollowingNode(ManagedNode, ConfigMixin):
-    """A managed node for running the line following vision pipeline."""
+    """A managed node for running the line following vision pipeline using dual RealSense cameras."""
     
     def __init__(self, node_name: str = "line_follower_node", config_path: str = "config.yaml"):
         ManagedNode.__init__(self, node_name)
         ConfigMixin.__init__(self, config_path)
         
-        self.camera = None
-        self.camera_reverse = None
+        self.camera_handler = None # <--- REPLACED camera and camera_reverse
         self.lane_detector = None
         self.visualizer = None
         self.pub_socket = None
         self.hmi_sub_socket = None
         self.sensor_sub_socket = None
         self.result_writer = None
-        self.frame_pub_socket = None # <-- NEW: SOCKET FOR PUBLISHING FRAMES
+        self.frame_pub_socket = None
         self.is_reverse = False
         self.current_speed_rpm = 0.0
         self.last_sensor_update = 0
@@ -216,7 +296,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         """Load configuration and initialize all components."""
         self.logger.info("Configuring Line Following Node...")
         try:
-            cam_config = self.get_camera_config('forward')
             self.vehicle_params = self.get_section_config('vehicle_params')
             
             # Steering command publisher
@@ -233,19 +312,10 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.sensor_sub_socket.connect(self.get_zmq_url('sensor_data_url'))
             self.sensor_sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('sensor_data_topic'))
             
-            # ZMQ Camera setup
-            zmq_camera_config = {
-                'sub_frame_url': self.get_zmq_url('camera_frame_url'),
-                'sub_frame_topic': self.get_zmq_topic('camera_frame_topic')
-            }
-            self.camera = ZMQCamera(cam_config, zmq_camera_config, self.context)
-
-            zmq_camera_reverse_config = {
-                'sub_frame_url': self.get_zmq_url('camera_frame_reverse_url'),
-                'sub_frame_topic': self.get_zmq_topic('camera_frame_reverse_topic')
-            }
-            self.camera_reverse = ZMQCamera(cam_config, zmq_camera_reverse_config, self.context)
-
+            # --- Direct RealSense Camera Setup ---
+            rs_cam_config = self.get_section_config('realsense_cameras')
+            self.camera_handler = MultiRealSenseCamera(rs_cam_config)
+            
             use_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
             self.logger.info(f"CUDA Available: {use_cuda}. {'Using GPU.' if use_cuda else 'Running on CPU.'}")
             self.lane_detector = LaneDetector(self.config, use_cuda)
@@ -255,14 +325,15 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             if self.vehicle_params.get('enable_video_recording', False):
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                video_filename = f"{cam_config['video_output_file'].rsplit('.', 1)[0]}_{timestamp}.mp4"
+                # Use a generic filename, as specific camera config is now elsewhere
+                video_filename = f"video_output_{timestamp}.mp4"
                 self.result_writer = cv2.VideoWriter(
-                    video_filename, fourcc, cam_config['frame_fps'],
-                    (cam_config['frame_width'] * 2, cam_config['frame_height'])
+                    video_filename, fourcc, rs_cam_config['frame_fps'],
+                    (rs_cam_config['frame_width'] * 2, rs_cam_config['frame_height'])
                 )
                 self.logger.info(f"Video writer enabled. Saving results to {video_filename}")
             
-            # <-- NEW: Conditionally setup frame publisher
+            # Conditional frame publisher (for debugging)
             if self.vehicle_params.get('enable_frame_publishing', False):
                 self.frame_pub_socket = self.context.socket(zmq.PUB)
                 publish_url = self.get_zmq_url('frame_publish_url')
@@ -281,8 +352,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
     def on_activate(self) -> bool:
         self.logger.info("Activating Line Following Node...")
         try:
-            self.camera.start()
-            self.camera_reverse.start()
+            self.camera_handler.start() # <--- START THE NEW CAMERA HANDLER
             self.active_event.set() 
             self.processing_thread = threading.Thread(
                 target=self._processing_loop, 
@@ -301,10 +371,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.active_event.clear()
             if self.processing_thread:
                 self.processing_thread.join(timeout=2.0)
-            if self.camera:
-                self.camera.stop()
-            if self.camera_reverse:
-                self.camera_reverse.stop()
+            if self.camera_handler:
+                self.camera_handler.stop() # <--- STOP THE NEW CAMERA HANDLER
             self.logger.info("Line Following Node deactivated.")
             return True
         except Exception as e:
@@ -325,7 +393,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 self.hmi_sub_socket.close()
             if self.sensor_sub_socket:
                 self.sensor_sub_socket.close()
-            # <-- NEW: Close the frame publisher socket
             if self.frame_pub_socket:
                 self.frame_pub_socket.close()
             cv2.destroyAllWindows()
@@ -339,25 +406,22 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         """Main processing loop for line following."""
         start_time = time.time()
         frame_count = 0
-        cam_config = self.get_camera_config('forward')
+        rs_cam_config = self.get_section_config('realsense_cameras')
         sc_config = self.get_section_config('stanley_controller')
 
+        # Poller for asynchronous ZMQ messages (HMI, sensors)
         poller = zmq.Poller()
         poller.register(self.hmi_sub_socket, zmq.POLLIN)
         poller.register(self.sensor_sub_socket, zmq.POLLIN)
-        if self.camera.socket:
-            poller.register(self.camera.socket, zmq.POLLIN)
-        if self.camera_reverse.socket:
-            poller.register(self.camera_reverse.socket, zmq.POLLIN)
 
         while self.active_event.is_set() and not self.shutdown_event.is_set():
-            socks = dict(poller.poll(100))
-            if not socks:
-                continue
+            # Poll for ZMQ messages with a short timeout to not block frame acquisition
+            socks = dict(poller.poll(timeout=10))
 
             if self.hmi_sub_socket in socks:
                 topic, msg = self.hmi_sub_socket.recv_multipart()
                 self.is_reverse = msg.decode('utf-8') == 'reverse'
+                self.logger.info(f"Direction changed to {'REVERSE' if self.is_reverse else 'FORWARD'}")
 
             if self.sensor_sub_socket in socks:
                 topic, sensor_data_json = self.sensor_sub_socket.recv_multipart()
@@ -368,9 +432,11 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 except (json.JSONDecodeError, KeyError) as e:
                     self.logger.warning(f"Failed to parse sensor data: {e}")
             
-            active_cam = self.camera_reverse if self.is_reverse else self.camera
-            frame = active_cam.get_frame()
+            # Get frame from the appropriate camera. This is a blocking call.
+            frame = self.camera_handler.get_frame(is_reverse=self.is_reverse)
             if frame is None:
+                self.logger.warning("Failed to get frame. Skipping processing cycle.")
+                time.sleep(0.1) # Avoid busy-looping if cameras disconnect
                 continue
             
             lane_data = self.lane_detector.process_frame(frame)
@@ -390,8 +456,12 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             
             desired_speed_rpm = desired_speed_ms / self.vehicle_params['rpm_to_mps_factor']
 
+            steering_angle_deg = math.degrees(steering_angle_rad)
+            if self.is_reverse:
+                steering_angle_deg = -steering_angle_deg
+
             command = steering_command_pb2.SteeringCommand()
-            command.auto_steer_angle = math.degrees(steering_angle_rad)
+            command.auto_steer_angle = steering_angle_deg
             command.speed = desired_speed_rpm
             serialized_command = command.SerializeToString()
             self.pub_socket.send_string(self.get_zmq_topic('steering_cmd_topic'), flags=zmq.SNDMORE)
@@ -404,7 +474,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             )
             stacked_output = np.hstack((frame, annotated_warped))
             
-            if cam_config.get('use_display', False):
+            # Use general display setting from vehicle_params
+            if self.vehicle_params.get('use_display', False):
                 cv2.imshow('Lane Following View', stacked_output)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     self.shutdown_event.set()
@@ -413,17 +484,14 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             if self.result_writer:
                 self.result_writer.write(stacked_output)
 
-            # <-- NEW: Publish the stacked frame if enabled
             if self.frame_pub_socket:
                 try:
-                    # Create and populate the protobuf message
                     frame_msg = frame_data_pb2.FrameData()
                     frame_msg.frame = stacked_output.tobytes()
                     frame_msg.height = stacked_output.shape[0]
                     frame_msg.width = stacked_output.shape[1]
                     frame_msg.channels = stacked_output.shape[2]
                     
-                    # Serialize and send
                     serialized_frame = frame_msg.SerializeToString()
                     self.frame_pub_socket.send_multipart([
                         self.get_zmq_topic('frame_publish_topic').encode('utf-8'),
