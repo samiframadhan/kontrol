@@ -36,7 +36,7 @@ zmq:
   control_cmd_topic: "teleop_cmd"
   
   # Sensor data from LLC
-  sensor_data_url: "tcp://localhost:5561"
+  sensor_data_url: "tcp://localhost:5568"
   sensor_data_topic: "sensor_data"
   
   # Lane assist status

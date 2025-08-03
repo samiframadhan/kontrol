@@ -62,6 +62,11 @@ class LLCInterfaceNode(ManagedNode, ConfigMixin):
         self.latest_command = LatestCommand(self.steer_multiplier)
         self.threads = []
         
+        # ZMQ Sockets
+        self.control_sub = None
+        self.sensor_pub = None
+        self.control_poller = None
+        
         # Protocol constants
         self.HEADER = 0xA5
         self.FUNC_STOP_STREAM = 0x00
@@ -72,11 +77,27 @@ class LLCInterfaceNode(ManagedNode, ConfigMixin):
     def on_configure(self) -> bool:
         self.logger.info("Configuring LLC Interface Node...")
         try:
+            # Configure serial port
             self.ser = serial.Serial(self.serial_port, self.baudrate, timeout=1)
             self.logger.info(f"Successfully opened serial port {self.serial_port}")
+
+            # --- Configure ZMQ Sockets ---
+            self.control_sub = self.context.socket(zmq.SUB)
+            self.control_sub.connect(self.get_zmq_url('control_cmd_url'))
+            self.control_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('control_cmd_topic'))
+            self.logger.info(f"Control subscriber connected to {self.get_zmq_url('control_cmd_url')}")
+            
+            self.sensor_pub = self.context.socket(zmq.PUB)
+            self.sensor_pub.bind(self.get_zmq_url('sensor_data_url'))
+            self.logger.info(f"Sensor publisher bound to {self.get_zmq_url('sensor_data_url')}")
+
+            # Poller for control commands
+            self.control_poller = zmq.Poller()
+            self.control_poller.register(self.control_sub, zmq.POLLIN)
+
             return True
-        except serial.SerialException as e:
-            self.logger.error(f"Could not open serial port '{self.serial_port}'. {e}")
+        except (serial.SerialException, zmq.ZMQError) as e:
+            self.logger.error(f"Configuration failed: {e}")
             return False
 
     def on_activate(self) -> bool:
@@ -151,17 +172,23 @@ class LLCInterfaceNode(ManagedNode, ConfigMixin):
     def on_shutdown(self) -> bool:
         self.logger.info("Shutting down LLC Interface Node...")
         try:
+            # Ensure threads are stopped if node is directly shut down
+            if not self.shutdown_event.is_set():
+                self.on_deactivate()
+
             if self.ser and self.ser.is_open:
                 self.logger.info("Applying full brake and centering steer on exit.")
                 payload = struct.pack('>HBBb', 0, 0, 100, 0)  # 0 RPM, 0 DIR, 100% BRAKE, 0 STEER
                 self.ser.write(self._create_packet(self.FUNC_CONTROL, payload))
                 time.sleep(0.2)
-                return True
         except serial.SerialException as e:
             self.logger.error(f"Error sending final commands: {e}")
         finally:
-            self.ser.close()
-            self.logger.info("Serial port closed.")
+            if self.ser: self.ser.close()
+            if self.control_sub: self.control_sub.close()
+            if self.sensor_pub: self.sensor_pub.close()
+            self.logger.info("Serial port and ZMQ sockets closed.")
+        return True
 
     def _create_packet(self, func_code, payload=b''):
         """Creates a complete serial packet."""
@@ -243,45 +270,40 @@ class LLCInterfaceNode(ManagedNode, ConfigMixin):
         self.logger.info("Serial I/O thread finished.")
 
     def _command_subscriber(self):
-        """Subscribe to control commands."""
-        socket = self.context.socket(zmq.SUB)
-        socket.connect(self.get_zmq_url('control_cmd_url'))
-        socket.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('control_cmd_topic'))
-        self.logger.info(f"Listening for commands on {self.get_zmq_url('control_cmd_url')}")
+        """Subscribe to control commands using the pre-configured socket."""
+        self.logger.info("Command subscriber thread started.")
         
         while not self.shutdown_event.is_set():
             try:
-                if socket.poll(100):
-                    topic, command_json = socket.recv_multipart()
+                if self.control_sub.poll(100):
+                    topic, command_json = self.control_sub.recv_multipart()
                     command = json.loads(command_json)
                     self.latest_command.set_command(command)
                     self.logger.info(f"Received command: {command}")
             except (zmq.ZMQError, json.JSONDecodeError) as e:
-                self.logger.error(f"Error in command subscriber: {e}", exc_info=True)
+                if not self.shutdown_event.is_set():
+                    self.logger.error(f"Error in command subscriber: {e}", exc_info=True)
                 self.shutdown_event.set()
                 break
-        socket.close()
         self.logger.info("Command subscriber thread finished.")
 
     def _data_publisher(self):
-        """Publish sensor data."""
-        socket = self.context.socket(zmq.PUB)
-        socket.bind(self.get_zmq_url('sensor_data_url'))
-        self.logger.info(f"Publishing sensor data on {self.get_zmq_url('sensor_data_url')}")
+        """Publish sensor data using the pre-configured socket."""
+        self.logger.info("Data publisher thread started.")
         
         while not self.shutdown_event.is_set():
             try:
                 parsed_info = self.read_queue.get(timeout=1)
-                socket.send_string(self.get_zmq_topic('sensor_data_topic'), flags=zmq.SNDMORE)
-                socket.send_json(parsed_info)
+                self.sensor_pub.send_string(self.get_zmq_topic('sensor_data_topic'), flags=zmq.SNDMORE)
+                self.sensor_pub.send_json(parsed_info)
                 self.read_queue.task_done()
             except Empty:
                 continue
             except Exception as e:
-                self.logger.error(f"Error in data publisher: {e}", exc_info=True)
+                if not self.shutdown_event.is_set():
+                    self.logger.error(f"Error in data publisher: {e}", exc_info=True)
                 self.shutdown_event.set()
                 break
-        socket.close()
         self.logger.info("Data publisher thread finished.")
 
     def _control_sender_thread(self):
@@ -310,7 +332,8 @@ class LLCInterfaceNode(ManagedNode, ConfigMixin):
                 self.logger.info(f"CMD > RPM: {speed_rpm:<5.0f}, Steer: {steer_to_send:<4}, Brake: {brake_to_send:<3}%")
 
             except Exception as e:
-                self.logger.error(f"Error in control sender: {e}", exc_info=True)
+                if not self.shutdown_event.is_set():
+                    self.logger.error(f"Error in control sender: {e}", exc_info=True)
                 self.shutdown_event.set()
                 break
 
@@ -324,7 +347,7 @@ class LLCInterfaceNode(ManagedNode, ConfigMixin):
 if __name__ == "__main__":
     log_filename = f"llc_managed_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG, # Change to DEBUG to see command and data logs
         format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s',
         handlers=[
             logging.FileHandler(log_filename),
