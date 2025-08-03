@@ -113,7 +113,7 @@ class StanleyController:
     """Calculates steering angle using the Stanley control method."""
     @staticmethod
     def calculate_steering(cross_track_error, heading_error, speed, k, epsilon, is_reverse):
-        cross_track_term = math.atan2(k * cross_track_error, speed + epsilon)
+        cross_track_term = math.atan2(k * cross_track_error, abs(speed) + epsilon)
         return heading_error + cross_track_term
     
     @staticmethod
