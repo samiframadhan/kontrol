@@ -353,19 +353,20 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                     self.is_reverse = msg.decode('utf-8') == 'reverse'
 
             # Update current speed from sensor data
-            if self.sensor_sub_socket in socks:
-                topic, sensor_data_json = self.sensor_sub_socket.recv_multipart()
-                try:
-                    import json
-                    sensor_data = json.loads(sensor_data_json.decode('utf-8'))
-                    self.current_speed_rpm = sensor_data.get('rpm', 0.0)
-                    self.last_sensor_update = time.time()
-                except (json.JSONDecodeError, KeyError) as e:
-                    self.logger.warning(f"Failed to parse sensor data: {e}")
+            # if self.sensor_sub_socket in socks:
+            #     topic, sensor_data_json = self.sensor_sub_socket.recv_multipart()
+            #     try:
+            #         import json
+            #         sensor_data = json.loads(sensor_data_json.decode('utf-8'))
+            #         self.current_speed_rpm = sensor_data.get('rpm', 0.0)
+            #         self.last_sensor_update = time.time()
+            #         self.logger.info(f"Current speed updated: {self.current_speed_rpm} RPM")
+            #     except (json.JSONDecodeError, KeyError) as e:
+            #         self.logger.warning(f"Failed to parse sensor data: {e}")
             
             # Check if sensor data is stale (use fallback speed)
-            if time.time() - self.last_sensor_update > 1.0:  # 1 second timeout
-                self.current_speed_rpm = sc_config.get('assumed_speed_for_calc', 500.0)
+            # if time.time() - self.last_sensor_update > 1.0:  # 1 second timeout
+            #     self.current_speed_rpm = sc_config.get('assumed_speed_for_calc', 500.0)
             
             # Process frame for lane detection
             rev_frame = self.camera_reverse.get_frame()
@@ -383,16 +384,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             current_speed_ms = abs(self.current_speed_rpm) * self.vehicle_params['rpm_to_mps_factor']
             current_speed_kmh = current_speed_ms * 3.6
 
-            # Calculate steering angle using Stanley controller with real speed
-            steering_angle_rad = StanleyController.calculate_steering(
-                lane_data['cross_track_error'],
-                lane_data['heading_error'],
-                0.5 if current_speed_ms < 1.0 else current_speed_ms,
-                sc_config['gain'],
-                sc_config['speed_epsilon'],
-                self.is_reverse
-            )
-            steering_angle_deg = math.degrees(steering_angle_rad)
 
             # Calculate desired velocity
             desired_speed_ms = StanleyController.calculate_velocity(
@@ -404,6 +395,16 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 self.is_reverse
             )
 
+            # Calculate steering angle using Stanley controller with real speed
+            steering_angle_rad = StanleyController.calculate_steering(
+                lane_data['cross_track_error'],
+                lane_data['heading_error'],
+                desired_speed_ms,
+                sc_config['gain'],
+                sc_config['speed_epsilon'],
+                self.is_reverse
+            )
+            steering_angle_deg = math.degrees(steering_angle_rad)
             desired_speed_rpm = desired_speed_ms / self.vehicle_params['rpm_to_mps_factor']
 
             # Send steering command and desired velocity via ZMQ
