@@ -453,10 +453,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 lane_data['cross_track_error'], lane_data['heading_error'],
                 desired_speed_ms, sc_config['gain'], sc_config['speed_epsilon'], self.is_reverse
             )
-            if self.is_reverse:
-                steering_angle_deg = math.degrees(steering_angle_rad)
-                steering_angle_deg = -steering_angle_deg
-                steering_angle_rad = math.radians(steering_angle_deg)
             
             desired_speed_rpm = desired_speed_ms / self.vehicle_params['rpm_to_mps_factor']
 
