@@ -250,7 +250,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.visualizer = Visualizer()
             
             # Conditionally setup video writer based on a single config parameter
-            if self.config.get('enable_video_writer', False):
+            if self.vehicle_params.get('enable_video_recording', False):
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 video_filename = f"{cam_config['video_output_file'].rsplit('.', 1)[0]}_{timestamp}.mp4"
