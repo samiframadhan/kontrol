@@ -18,6 +18,16 @@ zmq:
   camera_frame_reverse_url: "tcp://localhost:5558"
   camera_frame_reverse_topic: "cam_frame_reverse"
   
+  lidar_raw_url: "tcp://localhost:5570"
+  lidar_raw_topic: "lidar_scan"  
+
+  obstacle_data_url: "tcp://*:5571"
+  obstacle_data_topic: "obstacle"
+
+  obstacle_data_sub: "tcp://localhost:5571"
+  obstacle_data_sub_topic: "obstacle"
+
+
   # HMI commands
   hmi_cmd_url: "tcp://localhost:5527"
   hmi_cmd_topic: "hmi_cmd"
@@ -80,7 +90,9 @@ camera:
 aruco:
   frame_width: 640
   frame_height: 480
-  calibration_file: "calibrationd435.yml"
+  # Tentukan file kalibrasi terpisah untuk setiap arah
+  forward_calibration_file: "calibration_forward_D435.yml"
+  reverse_calibration_file: "calibration_reverse_D415.yml"
   camera_height_m: 1.5
   known_marker_width_m: 0.145
 
@@ -90,7 +102,7 @@ lane_detection:
   hsv_upper: [200, 20, 255]
   perspective_warp: 0.35
   min_contour_area: 180
-  max_contour_area: 600
+  max_contour_area: 800
   pixels_to_meters: 0.00725
   segments: 5
 
@@ -98,17 +110,17 @@ lane_detection:
 stanley_controller:
   gain: 0.5
   speed_epsilon: 0.000001
-  assumed_speed_for_calc: 3.0
-  max_speed: 3.0
+  assumed_speed_for_calc: 1.0
+  max_speed: 1.5
   kcte: 0.5
-  khe: 0.5
+  khe: 0.2
 
 # Vehicle Parameters
 vehicle_params:
   rpm_to_mps_factor: 0.0025
   max_speed_rpm: 1000.0
-  speed_ramp_rate: 500
-  brake_ramp_rate: 50
+  speed_ramp_rate: 700
+  brake_ramp_rate: 120
   max_brake_force: 100
   distance_threshold: 0.2
   enable_video_recording: false
@@ -125,3 +137,11 @@ llc:
   baudrate: 115200
   steer_multiplier: -3.0
   downsample_rate: 10
+
+# Safety Zone Configuration
+safety_zone:
+  # Area (m) relative to vehicle center-forward [min_x, max_x] dan [min_y, max_y]
+  min_x: -1.75
+  max_x: 1.75
+  min_y: 0.0
+  max_y: 2.0
