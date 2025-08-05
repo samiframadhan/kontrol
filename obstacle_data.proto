@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+// Mendefinisikan satu titik data hasil konversi
+message CartesianPoint {
+  float x_m = 1;
+  float y_m = 2;
+  int32 quality = 3;
+}
+
+// Mendefinisikan sebuah pesan yang berisi seluruh data pindaian
+// sebagai daftar dari titik-titik di atas.
+message LidarScan {
+  repeated CartesianPoint points = 1;
+}
