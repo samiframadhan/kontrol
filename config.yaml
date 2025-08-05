@@ -39,7 +39,7 @@ zmq:
   steering_cmd_topic: "lane_assist_angle"
   
   # Distance data from ArUco
-  distance_url: "tcp://localhost:5531"
+  distance_url: "tcp://localhost:5536"
   distance_topic: "aruco_distance"
   
   # Control commands to LLC
@@ -94,7 +94,7 @@ aruco:
   # Tentukan file kalibrasi terpisah untuk setiap arah
   forward_calibration_file: "calibrationd435.yml"
   reverse_calibration_file: "calibrationd415.yml"
-  camera_height_m: 1.5
+  camera_height_m: 1.05
   known_marker_width_m: 0.145
 
 # Lane Detection Parameters
@@ -134,7 +134,7 @@ hmi:
 
 # LLC Interface Configuration
 llc:
-  serial_port: '/dev/ttyACM1'
+  serial_port: '/dev/ttyACM0'
   baudrate: 115200
   steer_multiplier: -3.0
   downsample_rate: 10

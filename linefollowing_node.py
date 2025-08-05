@@ -553,6 +553,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 direct_dist = tvecs[0][0][2]
                 
                 cv2.drawFrameAxes(frame, self.active_camera_matrix, self.active_dist_coeffs, rvecs[0], tvecs[0], 0.1)
+                self.logger.info(f"Detected Aruco marker with ID {ids[0][0]} at distance {direct_dist:.2f} m")
                 if direct_dist > aruco_config['camera_height_m']:
                     ground_distance = math.sqrt(direct_dist**2 - aruco_config['camera_height_m']**2)
                     
