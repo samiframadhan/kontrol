@@ -109,12 +109,12 @@ lane_detection:
 
 # Stanley Controller Parameters
 stanley_controller:
-  gain: 0.5
+  gain: 0.3
   speed_epsilon: 0.000001
-  assumed_speed_for_calc: 1.0
-  max_speed: 1.5
-  kcte: 0.5
-  khe: 0.2
+  assumed_speed_for_calc: 0.1
+  max_speed: 0.3
+  kcte: 0.8
+  khe: 0.8
 
 # Vehicle Parameters
 vehicle_params:

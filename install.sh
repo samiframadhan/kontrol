@@ -5,7 +5,6 @@ VENV_NAME=".venv"
 
 # List of standard nodes that run as a single instance
 STANDARD_PYTHON_NODES=(
-    "aruco.py"
     "control.py"
     "hmi_node.py"
     "linefollowing_node.py"

@@ -292,6 +292,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         
         self.processing_thread = None
         self.active_event = threading.Event()
+        self.current_max_speed = 0.0 # New attribute to store max speed
 
         # --- PENAMBAHAN DIMULAI ---
         # Atribut untuk fungsionalitas Aruco
@@ -319,6 +320,11 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.hmi_sub_socket = self.context.socket(zmq.SUB)
             self.hmi_sub_socket.connect(self.get_zmq_url('hmi_cmd_url'))
             self.hmi_sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_direction_topic'))
+
+            # NEW subscriber for max speed
+            self.hmi_max_speed_sub = self.context.socket(zmq.SUB)
+            self.hmi_max_speed_sub.connect(self.get_zmq_url('hmi_cmd_url'))
+            self.hmi_max_speed_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_max_speed_topic'))
 
             # Sensor data subscriber
             self.sensor_sub_socket = self.context.socket(zmq.SUB)
@@ -478,6 +484,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         poller = zmq.Poller()
         poller.register(self.hmi_sub_socket, zmq.POLLIN)
         poller.register(self.sensor_sub_socket, zmq.POLLIN)
+        poller.register(self.hmi_max_speed_sub, zmq.POLLIN)
 
         while self.active_event.is_set() and not self.shutdown_event.is_set():
             # Poll for ZMQ messages with a short timeout to not block frame acquisition
@@ -487,6 +494,14 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 topic, msg = self.hmi_sub_socket.recv_multipart()
                 self.is_reverse = msg.decode('utf-8') == 'reverse'
                 self.logger.info(f"Direction changed to {'REVERSE' if self.is_reverse else 'FORWARD'}")
+            
+            if self.hmi_max_speed_sub in socks:
+                topic, msg = self.hmi_max_speed_sub.recv_multipart()
+                try:
+                    self.current_max_speed = float(msg.decode('utf-8'))
+                    self.logger.info(f"Max speed updated to {self.current_max_speed} RPM.")
+                except ValueError:
+                    self.logger.warning(f"Invalid max speed value received: {msg.decode('utf-8')}")
 
             if self.sensor_sub_socket in socks:
                 topic, sensor_data_json = self.sensor_sub_socket.recv_multipart()
@@ -509,11 +524,19 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
 
             current_speed_ms = abs(self.current_speed_rpm) * self.vehicle_params['rpm_to_mps_factor']
             
-            desired_speed_ms = StanleyController.calculate_velocity(
-                lane_data['cross_track_error'], lane_data['heading_error'],
-                sc_config.get('max_speed', 1.0), sc_config.get('velocity_k_cte', 2.0),
-                sc_config.get('velocity_k_heading', 1.0), self.is_reverse
-            )
+            if self.hmi_max_speed_sub is not None:
+                desired_speed_ms = StanleyController.calculate_velocity(
+                    lane_data['cross_track_error'], lane_data['heading_error'],
+                    self.current_max_speed * self.vehicle_params['rpm_to_mps_factor'], # Use current_max_speed here
+                    sc_config.get('velocity_k_cte', 2.0),
+                    sc_config.get('velocity_k_heading', 1.0), self.is_reverse
+                )
+            else:
+                desired_speed_ms = StanleyController.calculate_velocity(
+                    lane_data['cross_track_error'], lane_data['heading_error'],
+                    sc_config.get('max_speed'), sc_config.get('velocity_k_cte', 2.0),
+                    sc_config.get('velocity_k_heading', 1.0), self.is_reverse
+                )
 
             steering_angle_rad = StanleyController.calculate_steering(
                 lane_data['cross_track_error'], lane_data['heading_error'],

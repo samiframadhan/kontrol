@@ -121,6 +121,9 @@ class Orchestrator(ConfigMixin):
                         self._log_and_publish('info', 
                             f"Node '{node_name}' updated state to: {new_state.value}")
                         self.nodes[identity]["state"] = new_state
+                        if new_state == NodeState.INACTIVE:
+                            # Automatically activate inactive nodes
+                            self.command_queue.append((identity, "ACTIVATE"))
                         state_changed = True
                         
             elif msg_type == MessageType.HEARTBEAT:
@@ -162,22 +165,18 @@ class Orchestrator(ConfigMixin):
             elif command == "SHUTDOWN_ALL":
                 self._log_and_publish('info', "Client requested SHUTDOWN for all nodes.")
                 for identity in list(self.nodes.keys()):
-                    # <-- BARU: Pengecualian agar tidak me-restart hmi_node -->
-                    if self.nodes[identity]['name'] != 'hmi_node':
-                        self.command_queue.append((identity, "SHUTDOWN"))
+                    self.command_queue.append((identity, "SHUTDOWN"))
             
             elif command == "ACTIVATE_ALL":
                 self._log_and_publish('info', "Client requested ACTIVATE for all inactive nodes.")
                 for identity, data in self.nodes.items():
-                    # <-- BARU: Pengecualian agar tidak mengaktifkan hmi_node (karena sudah aktif) -->
-                    if data['name'] != 'hmi_node' and data['state'] == NodeState.INACTIVE:
+                    if data['state'] == NodeState.INACTIVE:
                         self.command_queue.append((identity, "ACTIVATE"))
             
             elif command == "DEACTIVATE_ALL":
                 self._log_and_publish('info', "Client requested DEACTIVATE for all active nodes.")
                 for identity, data in self.nodes.items():
-                    # <-- BARU: Pengecualian agar tidak menonaktifkan hmi_node -->
-                    if data['name'] != 'hmi_node' and data['state'] == NodeState.ACTIVE:
+                    if data['state'] == NodeState.ACTIVE:
                         self.command_queue.append((identity, "DEACTIVATE"))
             
             elif command == "REQUEST_SHUTDOWN":
@@ -317,4 +316,4 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    exit(main())    
+    exit(main())
