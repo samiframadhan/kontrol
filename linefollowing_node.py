@@ -1,5 +1,6 @@
 # linefollowing_node.py (Original 518 lines + Aruco Integration)
 import cv2
+from cv2 import aruco
 import datetime
 import math
 import numpy as np
@@ -359,8 +360,10 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.logger.info(f"Successfully loaded REVERSE calibration from {reverse_calib_file}")
 
             # Inisialisasi Aruco detector
-            aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
-            parameters = cv2.aruco.DetectorParameters()
+            aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_250)
+            # aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
+            # parameters = cv2.aruco.DetectorParameters()
+            parameters = aruco.DetectorParameters_create()
             self.aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
             
             # Buat publisher untuk data jarak Aruco
