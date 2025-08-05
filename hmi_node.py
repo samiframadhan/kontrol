@@ -16,7 +16,8 @@ class HMINode(ManagedNode, ConfigMixin):
         self.ser = None
         self.cmd_pub = None
         self.sensor_sub = None
-
+        self.orchestrator_pusher = None # <-- BARU
+        
         self.threads = []
         self.send_queue = Queue()
         self.read_queue = Queue()
@@ -27,6 +28,7 @@ class HMINode(ManagedNode, ConfigMixin):
         self.logger.info("Configuring HMI Node...")
         try:
             hmi_config = self.get_section_config('hmi')
+            orchestrator_config = self.get_section_config('orchestrator')
             
             # Configure Serial Port
             self.ser = serial.Serial(hmi_config['serial_port'], hmi_config['baud_rate'], timeout=1)
@@ -42,6 +44,11 @@ class HMINode(ManagedNode, ConfigMixin):
             self.sensor_sub.connect(self.get_zmq_url('sensor_data_url'))
             self.sensor_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('sensor_data_topic'))
             self.logger.info(f"Sensor subscriber connected to {self.get_zmq_url('sensor_data_url')}")
+            
+            # <-- BARU: Socket untuk mengirim perintah ke Orchestrator -->
+            self.orchestrator_pusher = self.context.socket(zmq.PUSH)
+            self.orchestrator_pusher.connect(orchestrator_config['command_pull_url'])
+            self.logger.info(f"Orchestrator command pusher connected to {orchestrator_config['command_pull_url']}")
             
             return True
         except (serial.SerialException, zmq.ZMQError, Exception) as e:
@@ -95,6 +102,7 @@ class HMINode(ManagedNode, ConfigMixin):
                 self.logger.info("Serial port closed.")
             if self.cmd_pub: self.cmd_pub.close()
             if self.sensor_sub: self.sensor_sub.close()
+            if self.orchestrator_pusher: self.orchestrator_pusher.close() # <-- BARU
             self.logger.info("ZMQ sockets closed.")
             return True
         except Exception as e:
@@ -152,12 +160,14 @@ class HMINode(ManagedNode, ConfigMixin):
             self.cmd_pub.send_string("START")
             self.ser.read(2)  # Empty the next 5 bytes
             self.ser.flush()
+
         elif byte_received == b'\xA6':
             self.logger.info("Received STOP command from HMI.")
             self.cmd_pub.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
             self.cmd_pub.send_string("STOP")
             self.ser.read(2)  # Empty the next 5 bytes
             self.ser.flush()
+
         elif byte_received == b'\xA7':
             # This is a multi-byte command, read the next byte
             status = self.ser.read(1)
@@ -167,6 +177,7 @@ class HMINode(ManagedNode, ConfigMixin):
             self.cmd_pub.send_string(direction)
             self.ser.read(5)  # Empty the next 5 bytes
             self.ser.flush()
+            
         elif byte_received == b'\xA8':
             self.logger.info("Received max speed command from HMI.")
             # Read the next byte for max speed (from hex \x00 - \xFF)
@@ -180,6 +191,18 @@ class HMINode(ManagedNode, ConfigMixin):
                 self.logger.info(f"Setting max speed to {max_speed}.")
                 self.cmd_pub.send_string(self.get_zmq_topic('hmi_max_speed_topic'), flags=zmq.SNDMORE)
                 self.cmd_pub.send_string(str(max_speed))
+        
+        elif byte_received == b'\xA9':
+            self.logger.info("Received ACTIVATE ALL command from HMI.")
+            command_message = {"command": "ACTIVATE_ALL"}
+            self.orchestrator_pusher.send_json(command_message)
+        
+
+        elif byte_received == b'\xA10':
+            self.logger.info("Received RESTART ALL command from HMI.")
+            # Mengirim SHUTDOWN_ALL akan memicu restart otomatis oleh systemd
+            command_message = {"command": "SHUTDOWN_ALL"}
+            self.orchestrator_pusher.send_json(command_message)
 
     def _serial_io_thread(self):
         """Handle both reading from and writing to the serial port."""
