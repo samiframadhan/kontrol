@@ -363,7 +363,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_250)
             # aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
             # parameters = cv2.aruco.DetectorParameters()
-            parameters = aruco.DetectorParameters_create()
+            parameters = aruco.DetectorParameters()
             self.aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
             
             # Buat publisher untuk data jarak Aruco
