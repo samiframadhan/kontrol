@@ -37,7 +37,7 @@ if [ -d "$VENV_NAME" ]; then
     echo "✅ Virtual environment '$VENV_NAME' already exists. Skipping creation."
 else
     echo "--- Creating virtual environment: $VENV_NAME ---"
-    sudo -u "$RUN_AS_USER" python3 -m venv "$VENV_NAME" --system-site-packages
+    sudo -u "$RUN_AS_USER" python3 -m venv "$VENV_NAME"
     echo "✅ Virtual environment created."
 fi
 chown -R "$RUN_AS_USER":"$RUN_AS_GROUP" "$VENV_NAME"
@@ -46,7 +46,7 @@ echo
 # --- 2. Install Requirements ---
 echo "--- Installing required modules from requirements.txt ---"
 source "$VENV_NAME/bin/activate"
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 deactivate
 echo "✅ Requirements installed."
 echo

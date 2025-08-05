@@ -1,5 +1,6 @@
 # linefollowing_node.py (Original 518 lines + Aruco Integration)
 import cv2
+from cv2 import aruco
 import datetime
 import math
 import numpy as np
@@ -359,8 +360,10 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.logger.info(f"Successfully loaded REVERSE calibration from {reverse_calib_file}")
 
             # Inisialisasi Aruco detector
-            aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
-            parameters = cv2.aruco.DetectorParameters()
+            aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_250)
+            # aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
+            # parameters = cv2.aruco.DetectorParameters()
+            parameters = aruco.DetectorParameters()
             self.aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
             
             # Buat publisher untuk data jarak Aruco
@@ -549,6 +552,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 )
                 direct_dist = tvecs[0][0][2]
                 
+                cv2.drawFrameAxes(frame, self.active_camera_matrix, self.active_dist_coeffs, rvecs[0], tvecs[0], 0.1)
+                self.logger.info(f"Detected Aruco marker with ID {ids[0][0]} at distance {direct_dist:.2f} m")
                 if direct_dist > aruco_config['camera_height_m']:
                     ground_distance = math.sqrt(direct_dist**2 - aruco_config['camera_height_m']**2)
                     
@@ -558,7 +563,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
 
                     # Gambar visualisasi Aruco pada frame original
                     cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-                    cv2.drawFrameAxes(frame, self.active_camera_matrix, self.active_dist_coeffs, rvecs[0], tvecs[0], 0.1)
                     cv2.putText(frame, f"Aruco Dist: {ground_distance:.2f} m", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             # --- PENAMBAHAN SELESAI ---
 
