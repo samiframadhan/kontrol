@@ -76,8 +76,13 @@ class LidarProcessorNode(ManagedNode, ConfigMixin):
             socks = dict(poller.poll(timeout=1000))
             if self.raw_lidar_sub in socks:
                 try:
-                    # Terima satu frame msgpack (tanpa topic)
-                    packed_data = self.raw_lidar_sub.recv()
+                    # --- PERUBAHAN PENTING DI SINI ---
+                    # Terima pesan 2-bagian: topik + payload, sesuai kiriman dari Rust
+                    message_parts = self.raw_lidar_sub.recv_multipart()
+                    # Kita hanya butuh datanya (payload), yang ada di bagian kedua (indeks 1)
+                    packed_data = message_parts[1]
+                    # ---------------------------------
+
                     # Debug print raw bytes length
                     print(f"[DEBUG] Received raw msgpack, bytes={len(packed_data)}")
 

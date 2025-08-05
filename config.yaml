@@ -39,7 +39,7 @@ zmq:
   steering_cmd_topic: "lane_assist_angle"
   
   # Distance data from ArUco
-  distance_url: "tcp://localhost:5536"
+  distance_url: "tcp://localhost:5533"
   distance_topic: "aruco_distance"
   
   # Control commands to LLC
@@ -94,7 +94,7 @@ aruco:
   # Tentukan file kalibrasi terpisah untuk setiap arah
   forward_calibration_file: "calibrationd435.yml"
   reverse_calibration_file: "calibrationd415.yml"
-  camera_height_m: 1.05
+  camera_height_m: 1.5
   known_marker_width_m: 0.145
 
 # Lane Detection Parameters
@@ -142,7 +142,7 @@ llc:
 # Safety Zone Configuration
 safety_zone:
   # Area (m) relative to vehicle center-forward [min_x, max_x] dan [min_y, max_y]
-  min_x: -1.75
-  max_x: 1.75
+  min_x: -0.8
+  max_x: 0.8
   min_y: 0.0
-  max_y: 2.0
+  max_y: 2.5
