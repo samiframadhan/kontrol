@@ -32,13 +32,14 @@ zmq:
   hmi_cmd_url: "tcp://localhost:5527"
   hmi_cmd_topic: "hmi_cmd"
   hmi_direction_topic: "hmi_direction"
+  hmi_max_speed_topic: "hmi_maxspeed"
   
   # Steering commands from lane following
   steering_cmd_url: "ipc:///tmp/teleop_cmd.ipc"
   steering_cmd_topic: "lane_assist_angle"
   
   # Distance data from ArUco
-  distance_url: "tcp://localhost:5556"
+  distance_url: "tcp://localhost:5533"
   distance_topic: "aruco_distance"
   
   # Control commands to LLC
@@ -91,8 +92,8 @@ aruco:
   frame_width: 640
   frame_height: 480
   # Tentukan file kalibrasi terpisah untuk setiap arah
-  forward_calibration_file: "calibration_forward_D435.yml"
-  reverse_calibration_file: "calibration_reverse_D415.yml"
+  forward_calibration_file: "calibrationd435.yml"
+  reverse_calibration_file: "calibrationd415.yml"
   camera_height_m: 1.5
   known_marker_width_m: 0.145
 

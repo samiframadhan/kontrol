@@ -449,6 +449,9 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 self.distance_pub.close()
             # --- PENAMBAHAN SELESAI ---
 
+            if self.context:
+                self.context.term()
+
             cv2.destroyAllWindows()
             self.logger.info("Line Following Node shutdown successful.")
             return True

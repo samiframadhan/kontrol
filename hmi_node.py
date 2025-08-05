@@ -150,10 +150,14 @@ class HMINode(ManagedNode, ConfigMixin):
             self.logger.info("Received START command from HMI.")
             self.cmd_pub.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
             self.cmd_pub.send_string("START")
+            self.ser.read(2)  # Empty the next 5 bytes
+            self.ser.flush()
         elif byte_received == b'\xA6':
             self.logger.info("Received STOP command from HMI.")
             self.cmd_pub.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
             self.cmd_pub.send_string("STOP")
+            self.ser.read(2)  # Empty the next 5 bytes
+            self.ser.flush()
         elif byte_received == b'\xA7':
             # This is a multi-byte command, read the next byte
             status = self.ser.read(1)
@@ -161,6 +165,21 @@ class HMINode(ManagedNode, ConfigMixin):
             self.logger.info(f"Received DIRECTION command from HMI: {direction}.")
             self.cmd_pub.send_string(self.get_zmq_topic('hmi_direction_topic'), flags=zmq.SNDMORE)
             self.cmd_pub.send_string(direction)
+            self.ser.read(5)  # Empty the next 5 bytes
+            self.ser.flush()
+        elif byte_received == b'\xA8':
+            self.logger.info("Received max speed command from HMI.")
+            # Read the next byte for max speed (from hex \x00 - \xFF)
+            max_speed_byte = self.ser.read(1)
+            self.logger.info(f"Max speed byte received: {max_speed_byte.hex()}")
+            # Empty the next 5 bytes
+            self.ser.read(5)
+            self.ser.flush()
+            if max_speed_byte.hex() is not None:
+                max_speed = int(max_speed_byte.hex())
+                self.logger.info(f"Setting max speed to {max_speed}.")
+                self.cmd_pub.send_string(self.get_zmq_topic('hmi_max_speed_topic'), flags=zmq.SNDMORE)
+                self.cmd_pub.send_string(str(max_speed))
 
     def _serial_io_thread(self):
         """Handle both reading from and writing to the serial port."""
