@@ -39,7 +39,7 @@ zmq:
   steering_cmd_topic: "lane_assist_angle"
   
   # Distance data from ArUco
-  distance_url: "tcp://localhost:5533"
+  distance_url: "tcp://localhost:5531"
   distance_topic: "aruco_distance"
   
   # Control commands to LLC
@@ -134,7 +134,7 @@ hmi:
 
 # LLC Interface Configuration
 llc:
-  serial_port: '/dev/ttyACM0'
+  serial_port: '/dev/ttyACM1'
   baudrate: 115200
   steer_multiplier: -3.0
   downsample_rate: 10

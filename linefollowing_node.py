@@ -552,6 +552,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 )
                 direct_dist = tvecs[0][0][2]
                 
+                cv2.drawFrameAxes(frame, self.active_camera_matrix, self.active_dist_coeffs, rvecs[0], tvecs[0], 0.1)
                 if direct_dist > aruco_config['camera_height_m']:
                     ground_distance = math.sqrt(direct_dist**2 - aruco_config['camera_height_m']**2)
                     
@@ -561,7 +562,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
 
                     # Gambar visualisasi Aruco pada frame original
                     cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-                    cv2.drawFrameAxes(frame, self.active_camera_matrix, self.active_dist_coeffs, rvecs[0], tvecs[0], 0.1)
                     cv2.putText(frame, f"Aruco Dist: {ground_distance:.2f} m", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             # --- PENAMBAHAN SELESAI ---
 
