@@ -124,8 +124,8 @@ class HMINode(ManagedNode, ConfigMixin):
         # NOTE: You might need to adjust this conversion factor
         rpm = sensor_data.get('rpm', 0)
         kmh = (rpm * 3.6 * 0.0025) # Example: 0.2m wheel circumference
-        self._send_to_hmi(f"States.spd.val={int(kmh)}")
-        self._send_to_hmi(f"Auto.curvel.val={int(kmh)}")
+        # self._send_to_hmi(f"States.spd.val={int(kmh)}")
+        # self._send_to_hmi(f"Auto.curvel.val={int(kmh)}")
 
 
         # Steering gauge (percentage of -35 to 35)
@@ -135,14 +135,14 @@ class HMINode(ManagedNode, ConfigMixin):
 
         # Speed gauge (percentage of 0 to 30 km/h)
         spd_percent = int((max(0, min(30, kmh)) / 30) * 100)
-        self._send_to_hmi(f"States.spdgage.val={spd_percent}")
+        # self._send_to_hmi(f"States.spdgage.val={spd_percent}")
 
         # --- Indicator Pictures ---
         # Example: Show a warning if battery is below 20%
-        if sensor_data.get('battery_%', 100) < 20:
-             self._send_to_hmi("States.batind.pco=12") # Show warning icon
-        else:
-             self._send_to_hmi("States.batind.pco=13") # Hide warning icon
+        #if sensor_data.get('battery_%', 100) < 20:
+        #     self._send_to_hmi("States.batind.pco=12") # Show warning icon
+        #else:
+        #     self._send_to_hmi("States.batind.pco=13") # Hide warning icon
 
     def _process_incoming_hmi_byte(self, byte_received):
         """Process a single byte received from the HMI serial port."""

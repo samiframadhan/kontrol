@@ -40,9 +40,9 @@ SAFETY_ZONE = {'min_x_m': -1.75, 'max_x_m': 1.75, 'min_y_m': 0.0, 'max_y_m': 2.0
 context = zmq.Context()
 socket = context.socket(zmq.SUB)
 # Hubungkan ke URL tempat lidar_processor_node mempublikasikan data
-socket.connect("tcp://192.168.55.1:5571") 
+socket.connect("tcp://192.168.55.1:5571")
 # Berlangganan ke topik data halangan
-socket.setsockopt_string(zmq.SUBSCRIBE, "obstacle") 
+socket.setsockopt_string(zmq.SUBSCRIBE, "/dev/lidar_depan") 
 logging.info("Visualizer siap. Menunggu data dari Lidar Processor Node...")
 
 # --- Fungsi Helper untuk Menggambar ---

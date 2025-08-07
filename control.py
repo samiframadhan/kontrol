@@ -22,9 +22,9 @@ DISTANCE_TOPIC = "aruco_distance"
 # --- Parameter Kendaraan (Sesuai Original) ---
 MAX_SPEED_RPM = 1000.0
 SPEED_RAMP_RATE = 500
-BRAKE_RAMP_RATE = 50
-MAX_BRAKE_FORCE = 100
-DISTANCE_THRESHOLD = 1.5
+BRAKE_RAMP_RATE = 120
+MAX_BRAKE_FORCE = 253
+DISTANCE_THRESHOLD = 1.7
 
 # --- PENAMBAHAN DIMULAI ---
 # Konstanta untuk timeout data Aruco
@@ -227,6 +227,7 @@ class ControlNode(ManagedNode, ConfigMixin):
                 # Manajemen status halangan
                 self.last_aruco_update_time = time.time()
                 distance = self.last_received_distance # gunakan nilai yang sama
+                self.logger.info(f"Received distance data on topic {topic.decode('utf-8')}: {distance:.2f} m")
                 if distance < DISTANCE_THRESHOLD:
                     if not self.obstacle_detected:
                         self.logger.warning(f"HALANGAN ARUCO: Terdeteksi pada {distance:.2f} m. Memaksa berhenti!")
@@ -280,7 +281,7 @@ class ControlNode(ManagedNode, ConfigMixin):
                 if self.time_stopped is not None:
                     elapsed_time = time.time() - self.time_stopped
                     brake_force = min(MAX_BRAKE_FORCE, int(elapsed_time * BRAKE_RAMP_RATE))
-                    # self.logger.info(f"Brake force applied: {brake_force} N; time stopped: {elapsed_time:.2f} seconds ago.")
+                    self.logger.info(f"Brake force applied: {brake_force} N; time stopped: {elapsed_time:.2f} seconds ago.")
 
             self._send_llc_command(self.current_speed_rpm, self.current_steer_angle, brake_force)
             time.sleep(0.02)

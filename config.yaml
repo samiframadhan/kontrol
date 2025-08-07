@@ -18,8 +18,11 @@ zmq:
   camera_frame_reverse_url: "tcp://localhost:5558"
   camera_frame_reverse_topic: "cam_frame_reverse"
   
-  lidar_raw_url: "tcp://localhost:5570"
-  lidar_raw_topic: "lidar_scan"  
+  lidar_raw_url_depan: "tcp://localhost:5570"
+  lidar_raw_topic_depan: "lidar_scan" 
+
+  lidar_raw_url_belakang: "tcp://localhost:5572"
+  lidar_raw_topic_belakang: "lidar_scan_reverse" 
 
   obstacle_data_url: "tcp://*:5571"
   obstacle_data_topic: "obstacle"
@@ -95,7 +98,7 @@ aruco:
   forward_calibration_file: "calibrationd435.yml"
   reverse_calibration_file: "calibrationd415.yml"
   camera_height_m: 1.5
-  known_marker_width_m: 0.145
+  known_marker_width_m: 0.2
 
 # Lane Detection Parameters
 lane_detection:
@@ -112,24 +115,24 @@ stanley_controller:
   gain: 0.3
   speed_epsilon: 0.000001
   assumed_speed_for_calc: 0.1
-  max_speed: 0.3
-  kcte: 0.8
-  khe: 0.8
+  max_speed: 1.5
+  kcte: 0.001
+  khe: 0.001
 
 # Vehicle Parameters
 vehicle_params:
   rpm_to_mps_factor: 0.0025
   max_speed_rpm: 1000.0
   speed_ramp_rate: 700
-  brake_ramp_rate: 120
-  max_brake_force: 100
+  brake_ramp_rate: 5000
+  max_brake_force: 255
   distance_threshold: 0.2
   enable_video_recording: false
   enable_frame_publishing: true
 
 # HMI Configuration
 hmi:
-  serial_port: '/dev/ttyUSB0'
+  serial_port: '/dev/hmi'
   baud_rate: 115200
 
 # LLC Interface Configuration

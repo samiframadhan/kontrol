@@ -23,22 +23,36 @@ class LidarProcessorNode(ManagedNode, ConfigMixin):
         ManagedNode.__init__(self, node_name)
         ConfigMixin.__init__(self, config_path)
         
-        self.raw_lidar_sub = None
+        self.raw_lidar_sub_depan = None
+        self.raw_lidar_sub_belakang = None
+        self.hmi_sub = None
         self.scan_pub = None
-        
+        self.posisi = None 
+
         self.processing_thread = None
         self.active_event = threading.Event()
+        self.arah = None  # Arah LIDAR, bisa diatur dari HMI
 
     def on_configure(self) -> bool:
         self.logger.info("Configuring LIDAR Processor Node with corrected subscriber...")
         try:
             # Setup subscriber tanpa topic filtering (menerima satu frame data msgpack saja)
-            url_sub = self.get_zmq_url('lidar_raw_url')
-            self.raw_lidar_sub = self.context.socket(zmq.SUB)
-            self.raw_lidar_sub.connect(url_sub)
-            # Subscribe ke semua messages
-            self.raw_lidar_sub.setsockopt_string(zmq.SUBSCRIBE, "")
-            print(f"[DEBUG] SUB socket connected to {url_sub}, no topic filter")
+            url_sub_depan = self.get_zmq_url('lidar_raw_url_depan')
+            self.raw_lidar_sub_depan = self.context.socket(zmq.SUB)
+            self.raw_lidar_sub_depan.connect(url_sub_depan)
+            self.raw_lidar_sub_depan.setsockopt_string(zmq.SUBSCRIBE, "/dev/lidar_depan")
+            print(f"[DEBUG] SUB socket connected to {url_sub_depan}, no topic filter")
+
+            url_sub_belakang = self.get_zmq_url('lidar_raw_url_belakang')
+            self.raw_lidar_sub_belakang = self.context.socket(zmq.SUB)
+            self.raw_lidar_sub_belakang.connect(url_sub_belakang)
+            self.raw_lidar_sub_belakang.setsockopt_string(zmq.SUBSCRIBE, "")
+            # print(f"[DEBUG] SUB socket connected to {self.url_sub_belakang}, no topic filter")
+
+            # Setup HMI subscriber
+            self.hmi_sub = self.context.socket(zmq.SUB)
+            self.hmi_sub.connect(self.get_zmq_url('hmi_cmd_url'))
+            self.hmi_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_cmd_topic'))
 
             # Setup publisher
             url_pub = self.get_zmq_url('obstacle_data_url')
@@ -47,7 +61,7 @@ class LidarProcessorNode(ManagedNode, ConfigMixin):
             topic_pub = self.get_zmq_topic('obstacle_data_topic')
             print(f"[DEBUG] PUB socket bound to {url_pub}, publishing on topic '{topic_pub}'")
 
-            self.logger.info(f"Subscribed to raw LIDAR data on {url_sub} (all topics)")
+            # self.logger.info(f"Subscribed to raw LIDAR data on {url_sub} (all topics)")
             self.logger.info(f"Publishing processed LidarScan on {url_pub}")
             return True
         except Exception as e:
@@ -69,20 +83,25 @@ class LidarProcessorNode(ManagedNode, ConfigMixin):
         self.logger.info("LIDAR processing loop started.")
         print("[DEBUG] Processing loop is running...")
         poller = zmq.Poller()
-        poller.register(self.raw_lidar_sub, zmq.POLLIN)
 
+        if self.hmi_sub in socks:
+            topic, msg = self.hmi_sub.recv_multipart()
+            direction = msg.decode('utf-8')
+            self.logger.info(f"Received HMI direction command on topic {topic.decode('utf-8')}: {direction}")
+            if direction == "forward":
+                poller.register(self.raw_lidar_sub_depan, zmq.POLLIN)
+            elif direction == "reverse":
+                poller.register(self.raw_lidar_sub_belakang, zmq.POLLIN)
+            else:
+                self.logger.warning(f"Unknown direction command: {direction}")        
+        
         topic_pub = self.get_zmq_topic('obstacle_data_topic')
         while self.active_event.is_set():
-            socks = dict(poller.poll(timeout=1000))
-            if self.raw_lidar_sub in socks:
+            socks = dict(poller.poll(timeout=100))
+            if self.raw_lidar_sub_depan in socks or self.lidar_raw_url_belakang in socks:
                 try:
-                    # --- PERUBAHAN PENTING DI SINI ---
-                    # Terima pesan 2-bagian: topik + payload, sesuai kiriman dari Rust
-                    message_parts = self.raw_lidar_sub.recv_multipart()
-                    # Kita hanya butuh datanya (payload), yang ada di bagian kedua (indeks 1)
-                    packed_data = message_parts[1]
-                    # ---------------------------------
-
+                    # Terima satu frame msgpack (tanpa topic)
+                    packed_data = self.raw_lidar_sub.recv()
                     # Debug print raw bytes length
                     print(f"[DEBUG] Received raw msgpack, bytes={len(packed_data)}")
 

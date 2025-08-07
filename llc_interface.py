@@ -33,7 +33,7 @@ class LatestCommand:
             # Clamp values to be safe
             self.speed_rpm = max(-1500.0, min(1500.0, self.speed_rpm))
             self.steer_angle = max(-120.0, min(120.0, self.steer_angle))
-            self.brake_force = max(0, min(100, self.brake_force))
+            self.brake_force = max(0, min(255, self.brake_force))
 
     def get_command(self):
         with self.lock:

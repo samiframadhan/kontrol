@@ -121,6 +121,8 @@ class StanleyController:
         """Calculate the desired velocity based on cross track error and heading error."""
         speed_factor = 1.0 / (1 + k_cte * abs(cross_track_error) + k_heading * abs(heading_error))
         desired_speed = speed * speed_factor
+        #if desired_speed < 350:
+        #    desired_speed = 350
         if is_reverse:
             desired_speed *= -1
         return desired_speed
@@ -527,15 +529,15 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             if self.hmi_max_speed_sub is not None:
                 desired_speed_ms = StanleyController.calculate_velocity(
                     lane_data['cross_track_error'], lane_data['heading_error'],
-                    self.current_max_speed * self.vehicle_params['rpm_to_mps_factor'], # Use current_max_speed here
-                    sc_config.get('velocity_k_cte', 2.0),
-                    sc_config.get('velocity_k_heading', 1.0), self.is_reverse
+                    sc_config.get('max_speed',1.0), # Use current_max_speed here
+                    sc_config.get('kcte', 2.0),
+                    sc_config.get('khe', 1.0), self.is_reverse
                 )
             else:
                 desired_speed_ms = StanleyController.calculate_velocity(
                     lane_data['cross_track_error'], lane_data['heading_error'],
-                    sc_config.get('max_speed'), sc_config.get('velocity_k_cte', 2.0),
-                    sc_config.get('velocity_k_heading', 1.0), self.is_reverse
+                    sc_config.get('max_speed', 2.0), sc_config.get('kcte', 2.0),
+                    sc_config.get('khe', 1.0), self.is_reverse
                 )
 
             steering_angle_rad = StanleyController.calculate_steering(
