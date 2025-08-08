@@ -3,6 +3,7 @@ import time
 import json
 import logging
 import threading
+import math
 from managednode import ManagedNode
 from shared_enums import NodeState
 from config_mixin import ConfigMixin
@@ -272,6 +273,7 @@ class ControlNode(ManagedNode, ConfigMixin):
             if self.is_running:
                 if self.time_started is not None:
                     elapsed_time = time.time() - self.time_started
+                    
                     self.current_speed_rpm = min(abs(self.desired_speed_rpm), elapsed_time * SPEED_RAMP_RATE)
                     if self.is_reverse:
                         self.current_speed_rpm *= -1
@@ -280,7 +282,11 @@ class ControlNode(ManagedNode, ConfigMixin):
                 self.current_speed_rpm = 0
                 if self.time_stopped is not None:
                     elapsed_time = time.time() - self.time_stopped
-                    brake_force = min(MAX_BRAKE_FORCE, int(elapsed_time * BRAKE_RAMP_RATE))
+                    BRAKE_LOG_BASE = 10.0
+                    BRAKE_SCALING_FACTOR = 253.0 
+                    
+                    log_brake = BRAKE_SCALING_FACTOR * math.log(1 + elapsed_time, BRAKE_LOG_BASE)
+                    brake_force = min(MAX_BRAKE_FORCE, int(log_brake))
                     self.logger.info(f"Brake force applied: {brake_force} N; time stopped: {elapsed_time:.2f} seconds ago.")
 
             self._send_llc_command(self.current_speed_rpm, self.current_steer_angle, brake_force)
