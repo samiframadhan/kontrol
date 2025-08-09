@@ -1,162 +1,160 @@
 import zmq
-import msgpack
-import msgpack_numpy as m
 import time
-import math
 import logging
 import threading
-
+import msgpack
 from managednode import ManagedNode
 from config_mixin import ConfigMixin
-# Ubah nama import sesuai file proto baru (meski nama file .py nya mungkin sama)
-import obstacle_data_pb2 
-
-m.patch()
+from shared_enums import NodeState # Assuming shared_enums.py exists
 
 class LidarProcessorNode(ManagedNode, ConfigMixin):
     """
-    Node ini mendengarkan data mentah dari sensor LIDAR via msgpack,
-    mengonversi semua titik ke koordinat Kartesius, dan 
-    mempublikasikan seluruh pindaian sebagai satu pesan Protobuf.
+    A managed node that processes raw LIDAR data and publishes actionable commands.
     """
-    def __init__(self, node_name="lidar_processor", config_path="config.yaml"):
+    def __init__(self, node_name="lidar_processor_node", config_path="config.yaml"):
+        # Initialize parent classes
         ManagedNode.__init__(self, node_name)
         ConfigMixin.__init__(self, config_path)
         
-        self.raw_lidar_sub_depan = None
-        self.raw_lidar_sub_belakang = None
-        self.hmi_sub = None
-        self.scan_pub = None
-        self.posisi = None 
+        # ZMQ Sockets (will be created in on_configure)
+        self.lidar_raw_sub = None
+        self.direction_sub = None
+        self.lidar_cmd_pub = None
+        self.processor_poller = zmq.Poller()
 
+        # Processing thread management
         self.processing_thread = None
         self.active_event = threading.Event()
-        self.arah = None  # Arah LIDAR, bisa diatur dari HMI
+
+        # State variables
+        self.is_reverse = False
+        self.last_direction_update = time.time()
+        
+        # Load parameters from config
+        self.direction_timeout = self.get_section_config('lidar_processor')['direction_timeout']
+        lidar_params = self.get_section_config('lidar_control')
+        self.min_dist_stop = lidar_params['min_distance_stop']
+        self.min_dist_reduce = lidar_params['min_distance_reduce_speed']
+        self.points_percentage = lidar_params['points_percentage_for_average']
 
     def on_configure(self) -> bool:
-        self.logger.info("Configuring LIDAR Processor Node with corrected subscriber...")
+        self.logger.info("Configuring Lidar Processor Node...")
         try:
-            # Setup subscriber tanpa topic filtering (menerima satu frame data msgpack saja)
-            url_sub_depan = self.get_zmq_url('lidar_raw_url_depan')
-            self.raw_lidar_sub_depan = self.context.socket(zmq.SUB)
-            self.raw_lidar_sub_depan.connect(url_sub_depan)
-            self.raw_lidar_sub_depan.setsockopt_string(zmq.SUBSCRIBE, "/dev/lidar_depan")
-            print(f"[DEBUG] SUB socket connected to {url_sub_depan}, no topic filter")
+            # 1. Subscribe to raw LIDAR data from simple.rs
+            self.lidar_raw_sub = self.context.socket(zmq.SUB)
+            self.lidar_raw_sub.connect(self.get_zmq_url('lidar_raw_url'))
+            self.lidar_raw_sub.setsockopt_string(zmq.SUBSCRIBE, "") # All topics
+            self.processor_poller.register(self.lidar_raw_sub, zmq.POLLIN)
 
-            url_sub_belakang = self.get_zmq_url('lidar_raw_url_belakang')
-            self.raw_lidar_sub_belakang = self.context.socket(zmq.SUB)
-            self.raw_lidar_sub_belakang.connect(url_sub_belakang)
-            self.raw_lidar_sub_belakang.setsockopt_string(zmq.SUBSCRIBE, "")
-            # print(f"[DEBUG] SUB socket connected to {self.url_sub_belakang}, no topic filter")
+            # 2. Subscribe to direction updates from control_node
+            self.direction_sub = self.context.socket(zmq.SUB)
+            self.direction_sub.connect(self.get_zmq_url('direction_status_url'))
+            self.direction_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('direction_status_topic'))
+            self.processor_poller.register(self.direction_sub, zmq.POLLIN)
 
-            # Setup HMI subscriber
-            self.hmi_sub = self.context.socket(zmq.SUB)
-            self.hmi_sub.connect(self.get_zmq_url('hmi_cmd_url'))
-            self.hmi_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_cmd_topic'))
-
-            # Setup publisher
-            url_pub = self.get_zmq_url('obstacle_data_url')
-            self.scan_pub = self.context.socket(zmq.PUB)
-            self.scan_pub.bind(url_pub)
-            topic_pub = self.get_zmq_topic('obstacle_data_topic')
-            print(f"[DEBUG] PUB socket bound to {url_pub}, publishing on topic '{topic_pub}'")
-
-            # self.logger.info(f"Subscribed to raw LIDAR data on {url_sub} (all topics)")
-            self.logger.info(f"Publishing processed LidarScan on {url_pub}")
+            # 3. Publish processed commands to control_node
+            self.lidar_cmd_pub = self.context.socket(zmq.PUB)
+            self.lidar_cmd_pub.bind(self.get_zmq_url('lidar_command_url'))
+            
+            self.logger.info("Sockets configured successfully.")
             return True
         except Exception as e:
-            self.logger.error(f"Configuration failed: {e}", exc_info=True)
-            print(f"[ERROR] Configuration failed: {e}")
+            self.logger.error(f"Error during configuration: {e}")
             return False
 
-    def on_shutdown(self) -> bool:
-        self.logger.info("Shutting down LIDAR processor sockets...")
-        if self.raw_lidar_sub:
-            self.raw_lidar_sub.close()
-            print("[DEBUG] SUB socket closed")
-        if self.scan_pub:
-            self.scan_pub.close()
-            print("[DEBUG] PUB socket closed")
-        return True
-
-    def _processing_loop(self):
-        self.logger.info("LIDAR processing loop started.")
-        print("[DEBUG] Processing loop is running...")
-        poller = zmq.Poller()
-
-        if self.hmi_sub in socks:
-            topic, msg = self.hmi_sub.recv_multipart()
-            direction = msg.decode('utf-8')
-            self.logger.info(f"Received HMI direction command on topic {topic.decode('utf-8')}: {direction}")
-            if direction == "forward":
-                poller.register(self.raw_lidar_sub_depan, zmq.POLLIN)
-            elif direction == "reverse":
-                poller.register(self.raw_lidar_sub_belakang, zmq.POLLIN)
-            else:
-                self.logger.warning(f"Unknown direction command: {direction}")        
-        
-        topic_pub = self.get_zmq_topic('obstacle_data_topic')
-        while self.active_event.is_set():
-            socks = dict(poller.poll(timeout=100))
-            if self.raw_lidar_sub_depan in socks or self.lidar_raw_url_belakang in socks:
-                try:
-                    # Terima satu frame msgpack (tanpa topic)
-                    packed_data = self.raw_lidar_sub.recv()
-                    # Debug print raw bytes length
-                    print(f"[DEBUG] Received raw msgpack, bytes={len(packed_data)}")
-
-                    # Unpack menjadi list of tuples
-                    raw_points = msgpack.unpackb(packed_data)
-                    # print(f"[DEBUG] Unpacked {len(raw_points)} points: {raw_points[:5]}{'...' if len(raw_points)>5 else ''}")
-
-                    # Buat pesan Protobuf LidarScan
-                    lidar_scan_msg = obstacle_data_pb2.LidarScan()
-                    for angle_rad, distance_m, quality in raw_points:
-                        if distance_m == 0:
-                            continue
-                        x_m = distance_m * math.sin(angle_rad)
-                        y_m = distance_m * math.cos(angle_rad)
-                        pt = lidar_scan_msg.points.add()
-                        pt.x_m = x_m
-                        pt.y_m = y_m
-                        pt.quality = int(quality)
-
-                    # Serialize & publish
-                    serialized_msg = lidar_scan_msg.SerializeToString()
-                    # Kirim dua-frame: topic + payload
-                    self.scan_pub.send_multipart([
-                        topic_pub.encode('utf-8'),
-                        serialized_msg
-                    ])
-                    # print(f"[DEBUG] Published processed scan on '{topic_pub}', {len(lidar_scan_msg.points)} points")
-
-                except zmq.Again:
-                    continue
-                except Exception as e:
-                    self.logger.error(f"Error processing LIDAR data: {e}", exc_info=True)
-                    print(f"[ERROR] Processing error: {e}")
-
     def on_activate(self) -> bool:
-        self.logger.info("Activating LIDAR processing loop...")
-        print("[DEBUG] Activating processing loop")
-        # Beri jeda agar publisher Rust sempat bind dan subscriber sempat subscribe
-        time.sleep(0.5)
+        self.logger.info("Activating Lidar Processor Node...")
         self.active_event.set()
         self.processing_thread = threading.Thread(target=self._processing_loop, daemon=True)
         self.processing_thread.start()
         return True
 
     def on_deactivate(self) -> bool:
-        self.logger.info("Deactivating LIDAR processing loop...")
-        print("[DEBUG] Deactivating processing loop")
+        self.logger.info("Deactivating Lidar Processor Node...")
         self.active_event.clear()
         if self.processing_thread:
             self.processing_thread.join(timeout=1.0)
-            print("[DEBUG] Processing thread joined")
+        self.logger.info("Node deactivated.")
         return True
 
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    print("Starting LIDAR Processor Node as a standalone process...")
+    def on_shutdown(self) -> bool:
+        self.logger.info("Shutting down Lidar Processor Node...")
+        if self.state == NodeState.ACTIVE:
+            self.on_deactivate()
+        
+        # Close all sockets
+        if self.lidar_raw_sub: self.lidar_raw_sub.close()
+        if self.direction_sub: self.direction_sub.close()
+        if self.lidar_cmd_pub: self.lidar_cmd_pub.close()
+        
+        self.logger.info("Shutdown complete.")
+        return True
+
+    def _processing_loop(self):
+        """The main loop for polling sockets and processing data."""
+        self.logger.info("Lidar processing loop started.")
+        while self.active_event.is_set():
+            socks = dict(self.processor_poller.poll(100))
+
+            # Handle direction updates first
+            if self.direction_sub in socks:
+                topic, msg = self.direction_sub.recv_multipart()
+                self.is_reverse = msg.decode('utf-8') == "REVERSE"
+                self.last_direction_update = time.time()
+                self.logger.debug(f"Direction updated: {'REVERSE' if self.is_reverse else 'FORWARD'}")
+
+            # Check for direction data timeout
+            if time.time() - self.last_direction_update > self.direction_timeout:
+                self.logger.warning("Direction data timed out. Assuming FORWARD for safety.")
+                self.is_reverse = False
+
+            # Handle LIDAR data
+            if self.lidar_raw_sub in socks:
+                topic_bytes, packed_data = self.lidar_raw_sub.recv_multipart()
+                command = self._calculate_command(topic_bytes, packed_data)
+                
+                # Publish the command if one was generated
+                if command:
+                    self.lidar_cmd_pub.send_string(self.get_zmq_topic('lidar_command_topic'), flags=zmq.SNDMORE)
+                    self.lidar_cmd_pub.send_string(command)
+        
+        self.logger.info("Lidar processing loop stopped.")
+
+    def _calculate_command(self, topic_bytes, packed_data):
+        """Processes a single LIDAR scan and returns a command string."""
+        topic = topic_bytes.decode('utf-8')
+        is_primary = (not self.is_reverse and "depan" in topic) or \
+                     (self.is_reverse and "belakang" in topic)
+
+        if not is_primary:
+            return None # No command for non-primary LIDAR
+        
+        # Determine the source for the command string
+        source = "DEPAN" if "depan" in topic else "BELAKANG"
+
+        try:
+            points = msgpack.unpackb(packed_data)
+            if not points: return "GO"
+
+            sorted_points = sorted(points, key=lambda p: p[2])
+            num_to_avg = max(1, int(len(sorted_points) * self.points_percentage))
+            avg_dist = sum(p[2] for p in sorted_points[:num_to_avg]) / num_to_avg
+
+            self.logger.debug(f"Primary LIDAR ({topic}) avg dist: {avg_dist:.2f}m")
+
+            if avg_dist < self.min_dist_stop:
+                self.logger.warning(f"Obstacle too close ({avg_dist:.2f}m). Commanding STOP from {source}.")
+                return f"STOP_{source}"
+            elif avg_dist < self.min_dist_reduce:
+                self.logger.info(f"Obstacle in range ({avg_dist:.2f}m). Commanding REDUCE_SPEED from {source}.")
+                return f"REDUCE_SPEED_{source}"
+            else:
+                return "GO"
+        except Exception as e:
+            self.logger.error(f"Error unpacking/processing LIDAR data: {e}")
+            return "GO" # Default to GO on error for safety
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     node = LidarProcessorNode()
     node.run()

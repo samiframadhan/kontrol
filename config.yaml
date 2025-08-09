@@ -17,12 +17,6 @@ zmq:
   # Camera frame streaming (reverse)
   camera_frame_reverse_url: "tcp://localhost:5558"
   camera_frame_reverse_topic: "cam_frame_reverse"
-  
-  lidar_raw_url_depan: "tcp://localhost:5570"
-  lidar_raw_topic_depan: "lidar_scan" 
-
-  lidar_raw_url_belakang: "tcp://localhost:5572"
-  lidar_raw_topic_belakang: "lidar_scan_reverse" 
 
   obstacle_data_url: "tcp://*:5571"
   obstacle_data_topic: "obstacle"
@@ -59,6 +53,24 @@ zmq:
 
   frame_publish_url: "tcp://*:5553"
   frame_publish_topic: "frame_data"
+  # --- For communication between lidar_processor and control_node ---
+  direction_status_url: "ipc:///tmp/direction_status.ipc"
+  direction_status_topic: "direction_status"
+  lidar_command_url: "ipc:///tmp/lidar_command.ipc"
+  lidar_command_topic: "lidar_command"
+
+  # --- For lidar_processor_node ---
+  lidar_raw_url: "tcp://localhost:5571" # From simple.rs
+
+# LIDAR Processing Parameters
+lidar_processor:
+  direction_timeout: 2.0 # seconds
+
+lidar_control:
+  min_distance_stop: 1.0 # meters, force stop
+  min_distance_reduce_speed: 2.5 # meters, start reducing speed
+  points_percentage_for_average: 0.1 # Use 10% of the nearest points
+  speed_reduction_factor: 0.6 # Reduce speed by 60% of desired speed
 
 # Add this section to your config.yaml
 realsense_cameras:
