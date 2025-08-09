@@ -152,7 +152,7 @@ class LidarProcessorNode(ManagedNode, ConfigMixin):
                 return "GO"
         except Exception as e:
             self.logger.error(f"Error unpacking/processing LIDAR data: {e}")
-            return "GO" # Default to GO on error for safety
+            return f"STOP_{source}" # Default to STOP on error for safety
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
