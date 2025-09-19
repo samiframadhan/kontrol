@@ -3,8 +3,10 @@ import cv2
 import zmq
 import numpy as np
 import logging
-import yaml  # <-- NEW: Import YAML library
+import yaml
 import frame_data_pb2  # Assumes frame_data.proto is compiled
+import threading
+import queue
 
 def setup_logging():
     """Configures the logging for the application."""
@@ -22,81 +24,124 @@ def load_config(path='config.yaml'):
         logging.error(f"Error parsing YAML file: {e}")
         return None
 
+# --- MODIFIED: ZMQ Subscriber Thread Function ---
+def zmq_subscriber_thread(zmq_url, zmq_topic, message_queue, shutdown_event):
+    """
+    This function runs in a separate thread. It connects to the ZMQ publisher,
+    receives raw messages, and puts them into a thread-safe queue.
+    It does NOT do any deserialization.
+    """
+    logger = logging.getLogger("ZMQSubscriberThread")
+    context = zmq.Context()
+    socket = context.socket(zmq.SUB)
+    
+    socket.setsockopt(zmq.RCVTIMEO, 1000)
+    
+    logger.info(f"Connecting to publisher at {zmq_url}")
+    socket.connect(zmq_url)
+    socket.setsockopt_string(zmq.SUBSCRIBE, zmq_topic)
+    
+    logger.info(f"Subscriber thread started. Subscribed to topic '{zmq_topic}'.")
+
+    try:
+        while not shutdown_event.is_set():
+            try:
+                # Receive the message parts (topic and the raw protobuf message)
+                topic, msg = socket.recv_multipart()
+                
+                # --- CHANGED: Put the raw message directly into the queue ---
+                try:
+                    message_queue.put(msg, block=False)
+                except queue.Full:
+                    logger.warning("Message queue is full, dropping a message.")
+                    continue
+
+            except zmq.Again:
+                continue
+    
+    finally:
+        logger.info("Subscriber thread shutting down.")
+        socket.close()
+        context.term()
+
 def main():
     """
-    Connects to a ZMQ publisher by reading settings from config.yaml 
-    and displays the received video frames.
+    Sets up a ZMQ subscriber in a separate thread and displays
+    the received video frames from a queue in the main thread.
     """
     setup_logging()
     logger = logging.getLogger("FrameViewer")
     
-    # --- Configuration ---
     config = load_config()
     if not config:
         return
 
-    # IMPORTANT: Use the IP address of the machine running the linefollowing_node.
-    # This will replace the '*' in the ZMQ URL from the config file.
-    PUBLISHER_IP = "192.168.55.1" 
+    PUBLISHER_IP = "127.0.0.1"
     
     try:
-        # Get URL and topic from the loaded config
         zmq_config = config.get('zmq', {})
-        zmq_url_template = zmq_config.get('frame_publish_url')
-        zmq_topic = zmq_config.get('frame_publish_topic')
+        zmq_url_template = zmq_config.get('camera_frame_url')
+        zmq_topic = zmq_config.get('camera_frame_topic')
 
         if not zmq_url_template or not zmq_topic:
-            logger.error("'frame_publish_url' or 'frame_publish_topic' not found in config.yaml")
+            logger.error("'camera_frame_url' or 'camera_frame_topic' not found in config.yaml")
             return
 
-        # Replace the wildcard '*' with the actual publisher IP
         zmq_url = zmq_url_template.replace('*', PUBLISHER_IP)
 
     except KeyError as e:
         logger.error(f"Missing required configuration key: {e}")
         return
 
-    context = zmq.Context()
-    socket = context.socket(zmq.SUB)
+    # --- CHANGED: Renamed queue for clarity ---
+    # This queue will hold raw protobuf messages (bytes)
+    message_queue = queue.Queue(maxsize=5) 
     
-    # Connect to the publisher
-    logger.info(f"Connecting to publisher at {zmq_url}")
-    socket.connect(zmq_url)
+    shutdown_event = threading.Event()
+
+    subscriber = threading.Thread(
+        target=zmq_subscriber_thread,
+        args=(zmq_url, zmq_topic, message_queue, shutdown_event), # <-- Pass message_queue
+        daemon=True
+    )
+    subscriber.start()
     
-    # Subscribe to the topic
-    socket.setsockopt_string(zmq.SUBSCRIBE, zmq_topic)
-    
-    logger.info(f"Viewer started. Subscribed to topic '{zmq_topic}'. Waiting for frames...")
+    logger.info("Main thread started. Waiting for messages from subscriber...")
     
     try:
         while True:
-            # Receive the message parts (topic and the protobuf message)
-            topic, msg = socket.recv_multipart()
+            try:
+                # Get a raw message from the queue.
+                msg = message_queue.get(timeout=1)
+                
+                frame_data = frame_data_pb2.FrameData()
+                frame_data.ParseFromString(msg)
+                
+                # Reconstruct the numpy array from the raw bytes
+                frame = np.frombuffer(frame_data.frame, dtype=np.uint8).reshape(
+                    (frame_data.height, frame_data.width, frame_data.channels)
+                )
+                # --- End of moved logic ---
+
+                cv2.imshow("Remote Frame Viewer", frame)
+                
+            except queue.Empty:
+                logger.info("Message queue is empty, waiting...")
+                continue
             
-            # Deserialize the protobuf message
-            frame_data = frame_data_pb2.FrameData()
-            frame_data.ParseFromString(msg)
-            
-            # Reconstruct the numpy array from the raw bytes
-            frame = np.frombuffer(frame_data.frame, dtype=np.uint8).reshape(
-                (frame_data.height, frame_data.width, frame_data.channels)
-            )
-            
-            # Display the frame
-            cv2.imshow("Remote Frame Viewer", frame)
-            
-            # Check for 'q' key press to exit
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                logger.info("'q' pressed, shutting down viewer.")
+                logger.info("'q' pressed, shutting down.")
                 break
                 
     except KeyboardInterrupt:
         logger.info("Interrupted by user. Shutting down.")
     finally:
-        # Clean up resources
+        logger.info("Signaling subscriber thread to shut down...")
+        shutdown_event.set()
+        
+        subscriber.join()
+        
         cv2.destroyAllWindows()
-        socket.close()
-        context.term()
         logger.info("Viewer shut down successfully.")
 
 if __name__ == "__main__":
