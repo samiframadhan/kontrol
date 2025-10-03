@@ -1,4 +1,3 @@
-# linefollowing_node.py (Original 518 lines + Aruco Integration)
 import cv2
 from cv2 import aruco
 import datetime
@@ -9,7 +8,6 @@ import time
 import logging
 import threading
 import json
-import pyrealsense2 as rs 
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
@@ -19,96 +17,12 @@ import frame_data_pb2
 
 from managednode import ManagedNode
 from config_mixin import ConfigMixin
+from camera import ZmqFrameSubscriber
 
 def setup_logging():
     """Configures the logging for the application."""
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-# -------------------------------------------------------------------
-# --- CLASS FOR MANAGING MULTIPLE REALSENSE CAMERAS (Original) ------
-# -------------------------------------------------------------------
-class MultiRealSenseCamera:
-    """Manages multiple Intel RealSense cameras (e.g., D435 for forward, D415 for reverse)."""
-    def __init__(self, cam_config: dict):
-        self.config = cam_config
-        self.rs_ctx = rs.context()
-        self.pipelines = {}  # Using a dict to map 'forward'/'reverse' to pipelines
-        self.serial_numbers = {}  # To store found serial numbers
-
-        # Device identification from config
-        self.forward_cam_name = self.config.get('forward_camera_name', 'D435')
-        self.reverse_cam_name = self.config.get('reverse_camera_name', 'D415')
-        logging.info(f"Seeking Forward Cam: '{self.forward_cam_name}', Reverse Cam: '{self.reverse_cam_name}'")
-
-    def start(self):
-        logging.info("Starting RealSense cameras...")
-        devices = self.rs_ctx.query_devices()
-        
-        found_devs = {'forward': False, 'reverse': False}
-
-        for dev in devices:
-            dev_name = dev.get_info(rs.camera_info.name)
-            serial = dev.get_info(rs.camera_info.serial_number)
-            
-            cam_type = None
-            if self.forward_cam_name in dev_name and not found_devs['forward']:
-                cam_type = 'forward'
-            elif self.reverse_cam_name in dev_name and not found_devs['reverse']:
-                cam_type = 'reverse'
-
-            if cam_type:
-                logging.info(f"Found {cam_type} camera: {dev_name} (Serial: {serial})")
-                pipeline = rs.pipeline(self.rs_ctx)
-                cfg = rs.config()
-                cfg.enable_device(serial)
-                cfg.enable_stream(rs.stream.color, 
-                                  self.config['frame_width'], 
-                                  self.config['frame_height'], 
-                                  rs.format.bgr8, 
-                                  self.config['frame_fps'])
-                pipeline.start(cfg)
-                self.pipelines[cam_type] = pipeline
-                self.serial_numbers[cam_type] = serial
-                found_devs[cam_type] = True
-
-        if not found_devs['forward']:
-            logging.error(f"Forward RealSense device containing name '{self.forward_cam_name}' not found.")
-        if not found_devs['reverse']:
-            logging.error(f"Reverse RealSense device containing name '{self.reverse_cam_name}' not found.")
-        
-        if not all(found_devs.values()):
-             raise RuntimeError("Could not find all required RealSense devices. Check connection and config.")
-
-    def get_frame(self, is_reverse: bool):
-        cam_type = 'reverse' if is_reverse else 'forward'
-        
-        if cam_type not in self.pipelines:
-            logging.warning(f"Pipeline for '{cam_type}' camera not available.")
-            return None
-            
-        pipeline = self.pipelines[cam_type]
-        try:
-            frames = pipeline.wait_for_frames(timeout_ms=1000)
-            color_frame = frames.get_color_frame()
-            if not color_frame:
-                logging.warning(f"No color frame received from {cam_type} camera.")
-                return None
-            return np.asanyarray(color_frame.get_data())
-        except Exception as e:
-            logging.error(f"Error getting frame from {cam_type} camera: {e}")
-            return None
-
-    def stop(self):
-        logging.info("Stopping RealSense cameras.")
-        for cam_type, pipeline in self.pipelines.items():
-            try:
-                pipeline.stop()
-                logging.info(f"Pipeline for {cam_type} camera stopped.")
-            except Exception as e:
-                logging.error(f"Error stopping {cam_type} pipeline: {e}")
-        self.pipelines.clear()
-
-# --- StanleyController, LaneDetector, Visualizer (Original) ---
 class StanleyController:
     """Calculates steering angle using the Stanley control method."""
     @staticmethod
@@ -121,8 +35,6 @@ class StanleyController:
         """Calculate the desired velocity based on cross track error and heading error."""
         speed_factor = 1.0 / (1 + k_cte * abs(cross_track_error) + k_heading * abs(heading_error))
         desired_speed = speed * speed_factor
-        #if desired_speed < 350:
-        #    desired_speed = 350
         if is_reverse:
             desired_speed *= -1
         return desired_speed
@@ -194,6 +106,7 @@ class LaneDetector:
             
         return error_pixels, intersection_point
 
+    # TODO: Double line validation (parallelism, distance)
     def process_frame(self, img):
         H, W = img.shape[:2]
         M = self._get_perspective_transform((H, W))
@@ -239,8 +152,6 @@ class LaneDetector:
                 error_pixels, intersection_point = self._calculate_perpendicular_error(m, b, H, W)
                 pipeline_data['cross_track_error'] = error_pixels * self.ld_config['pixels_to_meters']
                 pipeline_data['cte_intersection_point'] = intersection_point
-        else:
-            logging.debug("Not enough lane points detected to calculate errors.")
 
         return pipeline_data
 
@@ -271,33 +182,33 @@ class Visualizer:
         return image
 
 class LineFollowingNode(ManagedNode, ConfigMixin):
-    """A managed node for running the line following vision pipeline using dual RealSense cameras."""
+    """A managed node for running the line following vision pipeline using remote camera frames over ZMQ."""
     
     def __init__(self, node_name: str = "line_follower_node", config_path: str = "config.yaml"):
         ManagedNode.__init__(self, node_name)
         ConfigMixin.__init__(self, config_path)
         
-        # --- Atribut Asli ---
-        self.camera_handler = None
+        # Camera now comes via ZMQ
+        self.forward_frame_sub = None
+        self.reverse_frame_sub = None
+
         self.lane_detector = None
         self.visualizer = None
         self.pub_socket = None
         self.hmi_sub_socket = None
+        self.hmi_max_speed_sub = None
         self.sensor_sub_socket = None
         self.result_writer = None
         self.frame_pub_socket = None
         self.is_reverse = False
         self.current_speed_rpm = 0.0
         self.last_sensor_update = 0
-        self.rpm_to_ms = 0.0
         self.vehicle_params = None
         
         self.processing_thread = None
         self.active_event = threading.Event()
-        self.current_max_speed = 0.0 # New attribute to store max speed
+        self.current_max_speed = 0.0
 
-        # --- PENAMBAHAN DIMULAI ---
-        # Atribut untuk fungsionalitas Aruco
         self.aruco_detector = None
         self.distance_pub = None
         self.forward_camera_matrix = None
@@ -306,11 +217,10 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         self.reverse_dist_coeffs = None
         self.active_camera_matrix = None
         self.active_dist_coeffs = None
-        # --- PENAMBAHAN SELESAI ---
 
     def on_configure(self) -> bool:
         """Load configuration and initialize all components."""
-        self.logger.info("Configuring Line Following Node...")
+        self.logger.info("Configuring Line Following Node (ZMQ camera)…")
         try:
             self.vehicle_params = self.get_section_config('vehicle_params')
             
@@ -323,7 +233,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.hmi_sub_socket.connect(self.get_zmq_url('hmi_cmd_url'))
             self.hmi_sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_direction_topic'))
 
-            # NEW subscriber for max speed
+            # Max speed subscriber
             self.hmi_max_speed_sub = self.context.socket(zmq.SUB)
             self.hmi_max_speed_sub.connect(self.get_zmq_url('hmi_cmd_url'))
             self.hmi_max_speed_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('hmi_max_speed_topic'))
@@ -333,21 +243,32 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.sensor_sub_socket.connect(self.get_zmq_url('sensor_data_url'))
             self.sensor_sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('sensor_data_topic'))
             
-            # --- Direct RealSense Camera Setup ---
-            rs_cam_config = self.get_section_config('realsense_cameras')
-            self.camera_handler = MultiRealSenseCamera(rs_cam_config)
-            
+            # --- ZMQ Camera Subscribers (replacing direct RealSense) ---
+            zmq_cfg = self.config.get('zmq', {})
+            f_url = zmq_cfg.get('camera_frame_url')
+            f_topic = zmq_cfg.get('camera_frame_topic')
+            r_url = zmq_cfg.get('camera_frame_reverse_url')
+            r_topic = zmq_cfg.get('camera_frame_reverse_topic')
+            if not f_url or not f_topic:
+                raise KeyError("Missing zmq.camera_frame_url/topic in config.yaml")
+            if not r_url or not r_topic:
+                self.logger.warning("Reverse camera ZMQ not set; reverse mode will reuse forward stream.")
+                r_url, r_topic = f_url, f_topic
+
+            self.forward_frame_sub = ZmqFrameSubscriber(self.context, f_url, f_topic, name="forward_cam")
+            self.reverse_frame_sub = ZmqFrameSubscriber(self.context, r_url, r_topic, name="reverse_cam")
+
+            # Lane detector + viz
             use_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
             self.logger.info(f"CUDA Available: {use_cuda}. {'Using GPU.' if use_cuda else 'Running on CPU.'}")
             self.lane_detector = LaneDetector(self.config, use_cuda)
             self.visualizer = Visualizer()
 
-            # --- PENAMBAHAN DIMULAI ---
-            # Konfigurasi Aruco
-            self.logger.info("Configuring Aruco detector...")
+            # TODO: Decouple ArUco from lane following?
+            # --- ArUco setup (unchanged) ---
+            self.logger.info("Configuring ArUco detector...")
             aruco_config = self.get_section_config('aruco')
 
-            # Muat file kalibrasi FORWARD
             forward_calib_file = aruco_config['forward_calibration_file']
             fs_forward = cv2.FileStorage(forward_calib_file, cv2.FILE_STORAGE_READ)
             if not fs_forward.isOpened():
@@ -355,9 +276,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.forward_camera_matrix = fs_forward.getNode("camera_matrix").mat()
             self.forward_dist_coeffs = fs_forward.getNode("dist_coeff").mat()
             fs_forward.release()
-            self.logger.info(f"Successfully loaded FORWARD calibration from {forward_calib_file}")
 
-            # Muat file kalibrasi REVERSE
             reverse_calib_file = aruco_config['reverse_calibration_file']
             fs_reverse = cv2.FileStorage(reverse_calib_file, cv2.FILE_STORAGE_READ)
             if not fs_reverse.isOpened():
@@ -365,33 +284,28 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.reverse_camera_matrix = fs_reverse.getNode("camera_matrix").mat()
             self.reverse_dist_coeffs = fs_reverse.getNode("dist_coeff").mat()
             fs_reverse.release()
-            self.logger.info(f"Successfully loaded REVERSE calibration from {reverse_calib_file}")
 
-            # Inisialisasi Aruco detector
             aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_5X5_250)
-            # aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
-            # parameters = cv2.aruco.DetectorParameters()
             parameters = aruco.DetectorParameters()
             self.aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
             
-            # Buat publisher untuk data jarak Aruco
+            # Distance publisher (Aruco)
             self.distance_pub = self.context.socket(zmq.PUB)
             self.distance_pub.bind(self.get_zmq_url('distance_url'))
-            self.logger.info(f"Aruco distance publisher bound to {self.get_zmq_url('distance_url')}")
-            # --- PENAMBAHAN SELESAI ---
             
-            # Conditional video writer
+            # Conditional video writer (dimensions assumed from config)
             if self.vehicle_params.get('enable_video_recording', False):
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 video_filename = f"video_output_{timestamp}.mp4"
+                rs_cam_config = self.get_section_config('realsense_cameras')  # uses same shape config
                 self.result_writer = cv2.VideoWriter(
                     video_filename, fourcc, rs_cam_config['frame_fps'],
                     (rs_cam_config['frame_width'] * 2, rs_cam_config['frame_height'])
                 )
                 self.logger.info(f"Video writer enabled. Saving results to {video_filename}")
             
-            # Conditional frame publisher (for debugging)
+            # Optional annotated frame publisher
             if self.vehicle_params.get('enable_frame_publishing', False):
                 self.frame_pub_socket = self.context.socket(zmq.PUB)
                 publish_url = self.get_zmq_url('frame_publish_url')
@@ -400,7 +314,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             else:
                 self.logger.info("Frame publishing is disabled.")
 
-            self.logger.info("Line Following Node configuration successful.")
+            self.logger.info("Configuration successful.")
             return True
             
         except Exception as e:
@@ -410,7 +324,12 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
     def on_activate(self) -> bool:
         self.logger.info("Activating Line Following Node...")
         try:
-            self.camera_handler.start()
+            # Start subscribers
+            if self.forward_frame_sub:
+                self.forward_frame_sub.start()
+            if self.reverse_frame_sub:
+                self.reverse_frame_sub.start()
+
             self.active_event.set() 
             self.processing_thread = threading.Thread(
                 target=self._processing_loop, 
@@ -429,8 +348,13 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.active_event.clear()
             if self.processing_thread:
                 self.processing_thread.join(timeout=2.0)
-            if self.camera_handler:
-                self.camera_handler.stop()
+
+            # Stop subscribers
+            if self.forward_frame_sub:
+                self.forward_frame_sub.stop()
+            if self.reverse_frame_sub:
+                self.reverse_frame_sub.stop()
+
             self.logger.info("Line Following Node deactivated.")
             return True
         except Exception as e:
@@ -453,12 +377,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 self.sensor_sub_socket.close()
             if self.frame_pub_socket:
                 self.frame_pub_socket.close()
-            
-            # --- PENAMBAHAN DIMULAI ---
-            # Tutup socket publisher jarak Aruco
             if self.distance_pub:
                 self.distance_pub.close()
-            # --- PENAMBAHAN SELESAI ---
 
             if self.context:
                 self.context.term()
@@ -474,13 +394,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         """Main processing loop for line following."""
         start_time = time.time()
         frame_count = 0
-        rs_cam_config = self.get_section_config('realsense_cameras')
         sc_config = self.get_section_config('stanley_controller')
-
-        # --- PENAMBAHAN DIMULAI ---
-        # Ambil config Aruco di awal loop
         aruco_config = self.get_section_config('aruco')
-        # --- PENAMBAHAN SELESAI ---
 
         # Poller for asynchronous ZMQ messages (HMI, sensors)
         poller = zmq.Poller()
@@ -489,8 +404,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         poller.register(self.hmi_max_speed_sub, zmq.POLLIN)
 
         while self.active_event.is_set() and not self.shutdown_event.is_set():
-            # Poll for ZMQ messages with a short timeout to not block frame acquisition
-            socks = dict(poller.poll(timeout=10))
+            # Poll for ZMQ messages with a short timeout to not block frame handling
+            socks = dict(poller.poll(timeout=5))
 
             if self.hmi_sub_socket in socks:
                 topic, msg = self.hmi_sub_socket.recv_multipart()
@@ -514,31 +429,37 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 except (json.JSONDecodeError, KeyError) as e:
                     self.logger.warning(f"Failed to parse sensor data: {e}")
             
-            # Get frame from the appropriate camera. This is a blocking call.
-            frame = self.camera_handler.get_frame(is_reverse=self.is_reverse)
+            # --- Acquire frame from ZMQ ---
+            if self.is_reverse and self.reverse_frame_sub:
+                frame = self.reverse_frame_sub.get_latest()
+                # if reverse topic not available, fall back to forward
+                if frame is None and self.forward_frame_sub:
+                    frame = self.forward_frame_sub.get_latest()
+            else:
+                frame = self.forward_frame_sub.get_latest() if self.forward_frame_sub else None
+
             if frame is None:
-                self.logger.warning("Failed to get frame. Skipping processing cycle.")
-                time.sleep(0.1) # Avoid busy-looping if cameras disconnect
+                # No frame yet; avoid busy loop
+                time.sleep(0.005)
                 continue
             
-            # --- TUGAS 1: LANE FOLLOWING (Logika Asli) ---
+            # --- Vision & Control ---
             lane_data = self.lane_detector.process_frame(frame)
 
+            # Current speed (m/s) from rpm
             current_speed_ms = abs(self.current_speed_rpm) * self.vehicle_params['rpm_to_mps_factor']
             
-            if self.hmi_max_speed_sub is not None:
-                desired_speed_ms = StanleyController.calculate_velocity(
-                    lane_data['cross_track_error'], lane_data['heading_error'],
-                    sc_config.get('max_speed',1.0), # Use current_max_speed here
-                    sc_config.get('kcte', 2.0),
-                    sc_config.get('khe', 1.0), self.is_reverse
-                )
+            if self.current_max_speed > 0.0:
+                max_speed_ms = self.current_max_speed * self.vehicle_params['rpm_to_mps_factor']
             else:
-                desired_speed_ms = StanleyController.calculate_velocity(
-                    lane_data['cross_track_error'], lane_data['heading_error'],
-                    sc_config.get('max_speed', 2.0), sc_config.get('kcte', 2.0),
-                    sc_config.get('khe', 1.0), self.is_reverse
-                )
+                # fallback to controller max in m/s (config value is already m/s)
+                max_speed_ms = sc_config.get('max_speed', 1.5)
+
+            desired_speed_ms = StanleyController.calculate_velocity(
+                lane_data['cross_track_error'], lane_data['heading_error'],
+                max_speed_ms, sc_config.get('kcte', 2.0),
+                sc_config.get('khe', 1.0), self.is_reverse
+            )
 
             steering_angle_rad = StanleyController.calculate_steering(
                 lane_data['cross_track_error'], lane_data['heading_error'],
@@ -549,9 +470,9 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 steering_angle_rad *= -1
             
             desired_speed_rpm = desired_speed_ms / self.vehicle_params['rpm_to_mps_factor']
-
             steering_angle_deg = math.degrees(steering_angle_rad)
 
+            # Publish steering command
             command = steering_command_pb2.SteeringCommand()
             command.auto_steer_angle = steering_angle_deg
             command.speed = desired_speed_rpm
@@ -559,11 +480,9 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.pub_socket.send_string(self.get_zmq_topic('steering_cmd_topic'), flags=zmq.SNDMORE)
             self.pub_socket.send(serialized_command)
 
-            # --- PENAMBAHAN DIMULAI ---
-            # --- TUGAS 2: DETEKSI JARAK ARUCO ---
+            # --- ArUco detection (uses raw frame) ---
             corners, ids, _ = self.aruco_detector.detectMarkers(frame)
             if ids is not None:
-                # Pilih data kalibrasi yang benar berdasarkan arah
                 if self.is_reverse:
                     self.active_camera_matrix = self.reverse_camera_matrix
                     self.active_dist_coeffs = self.reverse_dist_coeffs
@@ -571,27 +490,20 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                     self.active_camera_matrix = self.forward_camera_matrix
                     self.active_dist_coeffs = self.forward_dist_coeffs
 
-                # Lakukan estimasi pose dengan data kalibrasi yang aktif
                 rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
                     corners, aruco_config['known_marker_width_m'], self.active_camera_matrix, self.active_dist_coeffs
                 )
                 direct_dist = tvecs[0][0][2]
                 
                 cv2.drawFrameAxes(frame, self.active_camera_matrix, self.active_dist_coeffs, rvecs[0], tvecs[0], 0.1)
-                self.logger.info(f"Detected Aruco marker with ID {ids[0][0]} at distance {direct_dist:.2f} m")
                 if direct_dist > aruco_config['camera_height_m']:
                     ground_distance = math.sqrt(direct_dist**2 - aruco_config['camera_height_m']**2)
-                    
-                    # Publikasikan jarak
                     self.distance_pub.send_string(self.get_zmq_topic('distance_topic'), flags=zmq.SNDMORE)
                     self.distance_pub.send_string(f"{ground_distance}")
-
-                    # Gambar visualisasi Aruco pada frame original
                     cv2.aruco.drawDetectedMarkers(frame, corners, ids)
                     cv2.putText(frame, f"Aruco Dist: {ground_distance:.2f} m", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            # --- PENAMBAHAN SELESAI ---
 
-            # --- Visualisasi Gabungan (Logika Asli) ---
+            # --- Visualization / Publishing ---
             warped_view = lane_data.get('warped_image', np.zeros_like(frame))
             annotated_warped = self.visualizer.draw_pipeline_data(
                 warped_view, lane_data, steering_angle_rad, 
@@ -599,7 +511,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             )
             stacked_output = np.hstack((frame, annotated_warped))
             
-            # Use general display setting from vehicle_params
             if self.vehicle_params.get('use_display', False):
                 cv2.imshow('Lane Following View', stacked_output)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -616,7 +527,6 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                     frame_msg.height = stacked_output.shape[0]
                     frame_msg.width = stacked_output.shape[1]
                     frame_msg.channels = stacked_output.shape[2]
-                    
                     serialized_frame = frame_msg.SerializeToString()
                     self.frame_pub_socket.send_multipart([
                         self.get_zmq_topic('frame_publish_topic').encode('utf-8'),
@@ -635,7 +545,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
 
 def main():
     setup_logging()
-    line_follower = LineFollowingNode()
+    line_follower = LineFollowingNode(config_path="../params/config.yaml")
     line_follower.run()
 
 if __name__ == "__main__":

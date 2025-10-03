@@ -375,5 +375,5 @@ if __name__ == "__main__":
     #     ]
     # )
     
-    llc_node = LLCInterfaceNode()
+    llc_node = LLCInterfaceNode(config_path="../params/config.yaml")
     llc_node.run()

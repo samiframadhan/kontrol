@@ -1,12 +1,12 @@
-# frame_viewer.py
+# image_viewer.py
 import cv2
 import zmq
-import numpy as np
 import logging
 import yaml
-import frame_data_pb2  # Assumes frame_data.proto is compiled
 import threading
 import queue
+import simplejpeg as sjpg
+import time # <<< ADDED
 
 def setup_logging():
     """Configures the logging for the application."""
@@ -24,17 +24,14 @@ def load_config(path='config.yaml'):
         logging.error(f"Error parsing YAML file: {e}")
         return None
 
-# --- MODIFIED: ZMQ Subscriber Thread Function ---
 def zmq_subscriber_thread(zmq_url, zmq_topic, message_queue, shutdown_event):
     """
-    This function runs in a separate thread. It connects to the ZMQ publisher,
-    receives raw messages, and puts them into a thread-safe queue.
-    It does NOT do any deserialization.
+    Receives multipart messages (topic, timestamp, jpeg_bytes) and puts
+    the timestamp and jpeg_bytes into a thread-safe queue.
     """
     logger = logging.getLogger("ZMQSubscriberThread")
     context = zmq.Context()
     socket = context.socket(zmq.SUB)
-    
     socket.setsockopt(zmq.RCVTIMEO, 1000)
     
     logger.info(f"Connecting to publisher at {zmq_url}")
@@ -46,19 +43,23 @@ def zmq_subscriber_thread(zmq_url, zmq_topic, message_queue, shutdown_event):
     try:
         while not shutdown_event.is_set():
             try:
-                # Receive the message parts (topic and the raw protobuf message)
-                topic, msg = socket.recv_multipart()
+                # <<< MODIFIED: Receive three message parts now
+                topic, timestamp_bytes, msg_bytes = socket.recv_multipart()
                 
-                # --- CHANGED: Put the raw message directly into the queue ---
                 try:
-                    message_queue.put(msg, block=False)
+                    # <<< MODIFIED: Put a tuple (timestamp, jpeg_bytes) into the queue
+                    message_queue.put((timestamp_bytes, msg_bytes), block=False)
                 except queue.Full:
-                    logger.warning("Message queue is full, dropping a message.")
-                    continue
+                    try:
+                        message_queue.get_nowait()
+                        message_queue.put((timestamp_bytes, msg_bytes), block=False)
+                    except queue.Empty:
+                        pass
+                    except queue.Full:
+                        logger.warning("Queue is still full after dropping a frame.")
 
             except zmq.Again:
                 continue
-    
     finally:
         logger.info("Subscriber thread shutting down.")
         socket.close()
@@ -66,8 +67,7 @@ def zmq_subscriber_thread(zmq_url, zmq_topic, message_queue, shutdown_event):
 
 def main():
     """
-    Sets up a ZMQ subscriber in a separate thread and displays
-    the received video frames from a queue in the main thread.
+    Displays video frames from a queue and overlays the calculated latency.
     """
     setup_logging()
     logger = logging.getLogger("FrameViewer")
@@ -76,32 +76,28 @@ def main():
     if not config:
         return
 
-    PUBLISHER_IP = "127.0.0.1"
-    
     try:
         zmq_config = config.get('zmq', {})
         zmq_url_template = zmq_config.get('camera_frame_url')
         zmq_topic = zmq_config.get('camera_frame_topic')
+        publisher_ip = zmq_config.get('publisher_ip', 'localhost')
 
         if not zmq_url_template or not zmq_topic:
             logger.error("'camera_frame_url' or 'camera_frame_topic' not found in config.yaml")
             return
 
-        zmq_url = zmq_url_template.replace('*', PUBLISHER_IP)
+        zmq_url = zmq_url_template.replace('*', publisher_ip)
 
     except KeyError as e:
         logger.error(f"Missing required configuration key: {e}")
         return
 
-    # --- CHANGED: Renamed queue for clarity ---
-    # This queue will hold raw protobuf messages (bytes)
-    message_queue = queue.Queue(maxsize=5) 
-    
+    message_queue = queue.Queue(maxsize=2)
     shutdown_event = threading.Event()
 
     subscriber = threading.Thread(
         target=zmq_subscriber_thread,
-        args=(zmq_url, zmq_topic, message_queue, shutdown_event), # <-- Pass message_queue
+        args=(zmq_url, zmq_topic, message_queue, shutdown_event),
         daemon=True
     )
     subscriber.start()
@@ -111,18 +107,20 @@ def main():
     try:
         while True:
             try:
-                # Get a raw message from the queue.
-                msg = message_queue.get(timeout=1)
+                # <<< MODIFIED: Get the tuple from the queue
+                timestamp_bytes, jpeg_bytes = message_queue.get(timeout=1)
                 
-                frame_data = frame_data_pb2.FrameData()
-                frame_data.ParseFromString(msg)
+                # <<< ADDED: Calculate latency
+                recv_time = time.time_ns()
+                send_time = int(timestamp_bytes.decode('utf-8'))
+                latency_ms = (recv_time - send_time) / 1_000_000_000
                 
-                # Reconstruct the numpy array from the raw bytes
-                frame = np.frombuffer(frame_data.frame, dtype=np.uint8).reshape(
-                    (frame_data.height, frame_data.width, frame_data.channels)
-                )
-                # --- End of moved logic ---
-
+                frame = sjpg.decode_jpeg(jpeg_bytes, colorspace='BGR')
+                
+                # <<< ADDED: Draw latency on the frame
+                latency_text = f"Latency: {latency_ms:.1f} ms"
+                cv2.putText(frame, latency_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                
                 cv2.imshow("Remote Frame Viewer", frame)
                 
             except queue.Empty:
@@ -138,9 +136,7 @@ def main():
     finally:
         logger.info("Signaling subscriber thread to shut down...")
         shutdown_event.set()
-        
         subscriber.join()
-        
         cv2.destroyAllWindows()
         logger.info("Viewer shut down successfully.")
 

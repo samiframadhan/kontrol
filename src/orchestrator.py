@@ -295,7 +295,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Autonomous Driving System Orchestrator')
-    parser.add_argument('--config', type=str, default='config.yaml', 
+    parser.add_argument('--config', type=str, default='../params/config.yaml',
                        help='Path to configuration file')
     parser.add_argument('--log-level', type=str, default='INFO',
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],

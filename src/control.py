@@ -234,5 +234,5 @@ class ControlNode(ManagedNode, ConfigMixin):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    control_node = ControlNode()
+    control_node = ControlNode(config_path="../params/config.yaml")
     control_node.run()

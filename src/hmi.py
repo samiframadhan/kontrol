@@ -246,5 +246,5 @@ class HMINode(ManagedNode, ConfigMixin):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
-    hmi_node = HMINode()
+    hmi_node = HMINode(config_path="../params/config.yaml")
     hmi_node.run()

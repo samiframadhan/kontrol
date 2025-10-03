@@ -11,11 +11,12 @@ orchestrator:
 # ZMQ Communication URLs and Topics
 zmq:
   # Camera frame streaming
-  camera_frame_url: "tcp://localhost:5530"
+  # camera_frame_url: "tcp://10.42.0.153:5530"
+  camera_frame_url: "tcp://192.168.12.185:5530"
   camera_frame_topic: "cam_frame"
   
   # Camera frame streaming (reverse)
-  camera_frame_reverse_url: "tcp://localhost:5558"
+  camera_frame_reverse_url: "tcp://*:5558"
   camera_frame_reverse_topic: "cam_frame_reverse"
 
   obstacle_data_url: "tcp://*:5571"
@@ -107,8 +108,8 @@ aruco:
   frame_width: 640
   frame_height: 480
   # Tentukan file kalibrasi terpisah untuk setiap arah
-  forward_calibration_file: "calibrationd435.yml"
-  reverse_calibration_file: "calibrationd415.yml"
+  forward_calibration_file: "../params/calibrationimx708hdr.yaml"
+  reverse_calibration_file: "../params/calibrationimx708hdr.yaml"
   camera_height_m: 1.5
   known_marker_width_m: 0.2
 
@@ -122,6 +123,13 @@ lane_detection:
   pixels_to_meters: 0.00725
   segments: 5
 
+perspective_transform:
+  # A single factor (0.0 to 0.49) to define a symmetric trapezoid's bottom width.
+  # 0.0 means the bottom corners are at the edges of the frame.
+  # 0.4 means the bottom corners are very close to the center.
+  # A good starting value is often between 0.1 and 0.35.
+  warp_factor: 0.1
+
 # Stanley Controller Parameters
 stanley_controller:
   gain: 0.3
@@ -133,6 +141,7 @@ stanley_controller:
 
 # Vehicle Parameters
 vehicle_params:
+  pixels_to_meters: 0.00725
   rpm_to_mps_factor: 0.0025
   max_speed_rpm: 1000.0
   speed_ramp_rate: 700
@@ -161,3 +170,9 @@ safety_zone:
   max_x: 0.8
   min_y: 0.0
   max_y: 2.5
+
+# NEW: Frame Recording Configuration
+recording:
+  enable: true  # Set to true to record video, false to disable
+  output_dir: "../recordings" # Directory where videos will be saved
+  fps: 30 # Framerate for the output video

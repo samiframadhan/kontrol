@@ -153,6 +153,6 @@ class ArucoEstimatorNode(ManagedNode, ConfigMixin):
         self.logger.info("Processing loop stopped.")
 
 if __name__ == "__main__":
-    node = ArucoEstimatorNode()
+    node = ArucoEstimatorNode(config_path="../params/config.yaml")
     node.run()
     
