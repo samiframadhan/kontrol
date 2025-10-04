@@ -12,7 +12,7 @@ orchestrator:
 zmq:
   # Camera frame streaming
   # camera_frame_url: "tcp://10.42.0.153:5530"
-  camera_frame_url: "tcp://192.168.12.185:5530"
+  camera_frame_url: "tcp://10.42.0.235:5530"
   camera_frame_topic: "cam_frame"
   
   # Camera frame streaming (reverse)
@@ -150,6 +150,7 @@ vehicle_params:
   distance_threshold: 0.2
   enable_video_recording: false
   enable_frame_publishing: true
+  use_display: false
 
 # HMI Configuration
 hmi:
