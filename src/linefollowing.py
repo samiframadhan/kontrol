@@ -17,7 +17,7 @@ import frame_data_pb2
 
 from managednode import ManagedNode
 from config_mixin import ConfigMixin
-from camera import ZmqFrameSubscriber
+from camera import ZMQFrameSubscriber
 
 def setup_logging():
     """Configures the logging for the application."""
@@ -255,8 +255,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 self.logger.warning("Reverse camera ZMQ not set; reverse mode will reuse forward stream.")
                 r_url, r_topic = f_url, f_topic
 
-            self.forward_frame_sub = ZmqFrameSubscriber(self.context, f_url, f_topic, name="forward_cam")
-            self.reverse_frame_sub = ZmqFrameSubscriber(self.context, r_url, r_topic, name="reverse_cam")
+            self.forward_frame_sub = ZMQFrameSubscriber(f_url, f_topic, name="forward_cam")
+            self.reverse_frame_sub = ZMQFrameSubscriber(r_url, r_topic, name="reverse_cam")
 
             # Lane detector + viz
             use_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
