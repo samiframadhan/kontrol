@@ -1,6 +1,7 @@
 # tesdeteksi_modified.py
 # MODIFIED: Adapted computer vision parameters to work with incoming 480p frames.
 # MODIFIED: Added optional video recording of the processed stream.
+# MODIFIED: Added alternative frame source from a .mp4 video file.
 
 import cv2
 import zmq
@@ -101,7 +102,7 @@ class StanleyController:
         return desired_speed
 
 # =============================================================================
-# 3. LANE DETECTION PIPELINE (MODIFIED)
+# 3. LANE DETECTION PIPELINE (Unaltered)
 # =============================================================================
 
 # ---------------------- Contour helpers (MODIFIED) ----------------------
@@ -118,20 +119,20 @@ def pair_midpoint(cnt1: np.ndarray, cnt2: np.ndarray) -> Optional[Tuple[int, int
 def find_lane_contours(mask: np.ndarray) -> List[np.ndarray]:
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     # MODIFIED: Contour area values adjusted for 480p resolution (scaled down from 720p values)
-    min_area, max_area = 250, 3000
+    min_area, max_area = 300, 3000
     quad_contours = []
     size_threshold_contours = []
-    print(f"Total contours found: {len(contours)}")
+    # print(f"Total contours found: {len(contours)}")
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if min_area < area < max_area:
             perimeter = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.02 * perimeter, True)
-            print(f"Contour area: {area}, vertices: {len(approx)}")
+            # print(f"Contour area: {area}, vertices: {len(approx)}")
             size_threshold_contours.append(cnt)
             if len(approx) == 4:
                 quad_contours.append(cnt)
-    print(f"Filtered quadrilateral contours: {len(quad_contours)}")
+    # print(f"Filtered quadrilateral contours: {len(quad_contours)}")
     return quad_contours, size_threshold_contours
 
 def get_perspective_transform_from_warp_factor(H: int, W: int, warp_factor: float):
@@ -225,7 +226,7 @@ def calculate_errors_and_control(paired_midpoints: List[Tuple[int, int]], H: int
     return control_data
 
 # =============================================================================
-# 4. LANE PROCESSING CLASS WITH TEMPORAL FILTERING (MODIFIED)
+# 4. LANE PROCESSING CLASS WITH TEMPORAL FILTERING (Unaltered)
 # =============================================================================
 class LaneProcessor:
     def __init__(self, transform_cfg, vehicle_cfg, stanley_cfg):
@@ -254,14 +255,19 @@ class LaneProcessor:
         
         M, src_poly = get_perspective_transform_from_warp_factor(H, W, self.transform_cfg['warp_factor'])
         warped_frame = cv2.warpPerspective(undistorted_frame, M, (W, H), flags=cv2.INTER_LINEAR)
-        filtered = cv2.bilateralFilter(warped_frame, d=9, sigmaColor=75, sigmaSpace=75)
-        gray = cv2.cvtColor(filtered, cv2.COLOR_BGR2GRAY)
+        filtered = cv2.bilateralFilter(warped_frame, d=5, sigmaColor=175, sigmaSpace=175)
+        # Convert to HSV and use V channel as gray
+        hsv = cv2.cvtColor(filtered, cv2.COLOR_RGB2HSV)
+        gray = hsv[:, :, 1]  # V channel
+        # gray = cv2.equalizeHist(gray)
         # gray = cv2.GaussianBlur(gray, (7, 7), 0)
-        binary_mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 19, 2)
-        eroded = cv2.erode(binary_mask, kernel, iterations=1)
+        binary_mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, 2)
+        # binary_mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 2)
+        # binary_mask = cv2.bitwise_or(binary_mask, inv_binary_mask)
+        eroded = cv2.erode(binary_mask, kernel, iterations=3)
         processed_mask = cv2.morphologyEx(eroded, cv2.MORPH_OPEN, kernel, iterations=1)
         # processed_mask = cv2.dilate(processed_mask, kernel, iterations=2)
-        processed_mask = cv2.morphologyEx(processed_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        # processed_mask = cv2.morphologyEx(processed_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         lane_contours, raw_contours = find_lane_contours(processed_mask)
         current_pairs = pair_contours(lane_contours) if lane_contours else []
         if current_pairs is None: current_pairs = []
@@ -280,7 +286,7 @@ class LaneProcessor:
                 candidate_midpoints.sort(key=lambda p: np.linalg.norm(np.array(p) - np.array(self.last_valid_midpoint)))
                 closest_candidate = candidate_midpoints[0]
                 distance = np.linalg.norm(np.array(closest_candidate) - np.array(self.last_valid_midpoint))
-                print(f"Distance to last valid midpoint: {distance:.2f} px")
+                # print(f"Distance to last valid midpoint: {distance:.2f} px")
                 
                 if distance < self.VALIDITY_THRESHOLD_PX:
                     self.valid_frames_count += 1
@@ -334,7 +340,7 @@ class LaneProcessor:
         return combined_frame
 
 # =============================================================================
-# 5. FRAME RECORDER CLASS (NEW)
+# 5. FRAME RECORDER CLASS (Unaltered)
 # =============================================================================
 class FrameRecorder:
     """Handles optional video recording of processed frames."""
@@ -399,15 +405,18 @@ def main():
     config = load_config(path="../params/config.yaml")
     if not config: return
 
-    # --- Load Configuration (unchanged) ---
+    # --- Load Configuration ---
     try:
         zmq_config = config['zmq']
-        zmq_url = zmq_config['camera_frame_url'].replace('*', zmq_config.get('publisher_ip', 'localhost'))
-        zmq_topic = zmq_config['camera_frame_topic']
         transform_cfg = config['perspective_transform']
         vehicle_cfg = config['vehicle_params']
         stanley_cfg = config['stanley_controller']
         recording_cfg = config.get('recording', {})
+        
+        # MODIFIED: Check for an alternative video file source
+        video_source_cfg = config.get('video_source', {})
+        video_file = video_source_cfg.get('file', None)
+
         logger.info("Successfully loaded all configurations.")
     except KeyError as e:
         logger.error(f"Missing required configuration key/section: {e}. Please check config.yaml.")
@@ -428,46 +437,44 @@ def main():
         return
 
     # --- Initialize Components ---
-    lane_processor = LaneProcessor(transform_cfg, vehicle_cfg, stanley_cfg) # Unchanged
-    recorder = FrameRecorder(recording_cfg) # Unchanged
+    lane_processor = LaneProcessor(transform_cfg, vehicle_cfg, stanley_cfg)
+    recorder = FrameRecorder(recording_cfg)
 
-    # MODIFIED: Use multiprocessing Queue and Event for inter-process communication.
-    message_queue = mp.Queue(maxsize=2)
-    shutdown_event = mp.Event()
+    # =========================================================================
+    # MODIFIED: Conditional logic to switch between video file and ZMQ stream
+    # =========================================================================
 
-    # MODIFIED: Instantiate and start the subscriber as a separate Process.
-    subscriber = mp.Process(
-        target=zmq_subscriber_process,
-        args=(zmq_url, zmq_topic, message_queue, shutdown_event),
-        daemon=True,  # Daemon process exits when the main program exits
-        name="ZMQSubscriber"
-    )
-    subscriber.start()
+    if video_file:
+        # --- Run from VIDEO FILE ---
+        logger.info(f"Using video file source: {video_file}")
+        if not os.path.exists(video_file):
+            logger.error(f"Video file not found at '{video_file}'. Exiting.")
+            return
+        
+        cap = cv2.VideoCapture(video_file)
+        if not cap.isOpened():
+            logger.error(f"Could not open video file: {video_file}")
+            return
+        
+        try:
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    logger.info("End of video file reached.")
+                    break
 
-    logger.info("Main process started. Waiting for messages from subscriber process...")
+                # The script's vision parameters are tuned for 480p frames.
+                # We resize the 1280x720 video frame to match this expectation.
+                # Assuming 480p is 640x480 resolution.
+                frame_resized = cv2.resize(frame, (640, 480))
+                frame_resized = cv2.flip(frame_resized, 0)
 
-    try:
-        while True:
-            try:
-                # Get the next frame from the queue filled by the subscriber process
-                timestamp_bytes, jpeg_bytes = message_queue.get(timeout=1)
-                frame = sjpg.decode_jpeg(jpeg_bytes, colorspace='BGR')
-
-                # --- Core Processing Loop (unchanged) ---
-                processed_frame = lane_processor.process(frame, camera_matrix, dist_coeffs)
+                processed_frame = lane_processor.process(frame_resized, camera_matrix, dist_coeffs)
 
                 if recorder.is_enabled and not recorder.is_recording:
                     h, w, _ = processed_frame.shape
                     recorder.start(w, h)
                 recorder.write(processed_frame)
-
-                recv_time_ns = time.time_ns()
-                send_time_ns = int(timestamp_bytes.decode('utf-8'))
-                latency_ms = (recv_time_ns - send_time_ns) / 1_000_000
-
-                latency_text = f"Latency: {latency_ms:.1f} ms"
-                cv2.putText(processed_frame, latency_text, (processed_frame.shape[1] - 250, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
                 display_height = 480
                 h, w, _ = processed_frame.shape
@@ -477,35 +484,92 @@ def main():
 
                 cv2.imshow("Lane Detection Stream", display_frame)
 
-            except mp.queues.Empty: # MODIFIED: Catch the correct queue empty exception
-                logger.debug("Message queue is empty, main loop is waiting...")
-                continue
+                # Use waitKey(30) for ~30fps playback, or waitKey(1) for fastest processing
+                if cv2.waitKey(30) & 0xFF == ord('q'):
+                    logger.info("'q' pressed, shutting down.")
+                    break
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user. Shutting down.")
+        finally:
+            logger.info("Initiating shutdown sequence...")
+            cap.release()
+            recorder.stop()
+            cv2.destroyAllWindows()
+            logger.info("Shutdown complete.")
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                logger.info("'q' pressed, shutting down.")
-                break
+    else:
+        # --- Run from ZMQ STREAM (Original Behavior) ---
+        logger.info("Using ZMQ stream source.")
+        zmq_url = zmq_config['camera_frame_url'].replace('*', zmq_config.get('publisher_ip', 'localhost'))
+        zmq_topic = zmq_config['camera_frame_topic']
 
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user. Shutting down.")
-    finally:
-        logger.info("Initiating shutdown sequence...")
+        message_queue = mp.Queue(maxsize=2)
+        shutdown_event = mp.Event()
 
-        # MODIFIED: Robust shutdown for the multiprocessing process.
-        logger.info("Signaling subscriber process to shut down...")
-        shutdown_event.set()
-        subscriber.join(timeout=2)  # Wait up to 2 seconds for a graceful exit
+        subscriber = mp.Process(
+            target=zmq_subscriber_process,
+            args=(zmq_url, zmq_topic, message_queue, shutdown_event),
+            daemon=True,
+            name="ZMQSubscriber"
+        )
+        subscriber.start()
+        logger.info("Main process started. Waiting for messages from subscriber process...")
 
-        if subscriber.is_alive():
-            logger.warning("Subscriber process did not exit gracefully. Terminating.")
-            subscriber.terminate()  # Force terminate if it's stuck
-            subscriber.join()       # Wait for termination to complete
+        try:
+            while True:
+                try:
+                    timestamp_bytes, jpeg_bytes = message_queue.get(timeout=1)
+                    frame = sjpg.decode_jpeg(jpeg_bytes, colorspace='BGR')
 
-        logger.info("Stopping recorder...")
-        recorder.stop()
-        cv2.destroyAllWindows()
-        logger.info("Shutdown complete.")
+                    processed_frame = lane_processor.process(frame, camera_matrix, dist_coeffs)
+
+                    if recorder.is_enabled and not recorder.is_recording:
+                        h, w, _ = processed_frame.shape
+                        recorder.start(w, h)
+                    recorder.write(processed_frame)
+
+                    recv_time_ns = time.time_ns()
+                    send_time_ns = int(timestamp_bytes.decode('utf-8'))
+                    latency_ms = (recv_time_ns - send_time_ns) / 1_000_000
+
+                    latency_text = f"Latency: {latency_ms:.1f} ms"
+                    cv2.putText(processed_frame, latency_text, (processed_frame.shape[1] - 250, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+                    display_height = 480
+                    h, w, _ = processed_frame.shape
+                    aspect_ratio = w / h
+                    display_width = int(display_height * aspect_ratio)
+                    display_frame = cv2.resize(processed_frame, (display_width, display_height))
+
+                    cv2.imshow("Lane Detection Stream", display_frame)
+
+                except mp.queues.Empty:
+                    logger.debug("Message queue is empty, main loop is waiting...")
+                    continue
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    logger.info("'q' pressed, shutting down.")
+                    break
+
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user. Shutting down.")
+        finally:
+            logger.info("Initiating shutdown sequence...")
+            logger.info("Signaling subscriber process to shut down...")
+            shutdown_event.set()
+            subscriber.join(timeout=2)
+
+            if subscriber.is_alive():
+                logger.warning("Subscriber process did not exit gracefully. Terminating.")
+                subscriber.terminate()
+                subscriber.join()
+
+            logger.info("Stopping recorder...")
+            recorder.stop()
+            cv2.destroyAllWindows()
+            logger.info("Shutdown complete.")
+
 
 if __name__ == "__main__":
-    # This check is crucial for multiprocessing on some platforms (like Windows)
-    # to prevent child processes from re-importing and re-executing the main script's code.
     main()

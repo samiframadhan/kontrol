@@ -8,11 +8,14 @@ orchestrator:
   node_timeout: 10.0
   poll_timeout: 10
 
+video_source:
+  file: '../10500709.mp4'
+
 # ZMQ Communication URLs and Topics
 zmq:
   # Camera frame streaming
   # camera_frame_url: "tcp://10.42.0.153:5530"
-  camera_frame_url: "tcp://10.42.0.235:5530"
+  camera_frame_url: "tcp://192.168.12.185:5530"
   camera_frame_topic: "cam_frame"
   
   # Camera frame streaming (reverse)
