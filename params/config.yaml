@@ -8,19 +8,23 @@ orchestrator:
   node_timeout: 10.0
   poll_timeout: 10
 
-video_source:
-  file: '../10500709.mp4'
+#video_source:
+# file: '../10500709.mp4'
 
 # ZMQ Communication URLs and Topics
 zmq:
   # Camera frame streaming
   # camera_frame_url: "tcp://10.42.0.153:5530"
-  camera_frame_url: "tcp://192.168.12.185:5530"
+  camera_frame_url: "tcp://192.168.0.103:5530"
   camera_frame_topic: "cam_frame"
   
   # Camera frame streaming (reverse)
-  camera_frame_reverse_url: "tcp://192.168.12.195:5530"
+  camera_frame_reverse_url: "tcp://10.166.30.36:5530"
   camera_frame_reverse_topic: "cam_frame_reverse"
+
+  result_pub_url: "tcp://*:5538"
+  result_sub_url: "tcp://127.0.0.1:5538"
+  result_topic: "result_frame"
 
   obstacle_data_url: "tcp://*:5571"
   obstacle_data_topic: "obstacle"
@@ -120,7 +124,7 @@ aruco:
 lane_detection:
   hsv_lower: [0, 0, 230]
   hsv_upper: [200, 20, 255]
-  perspective_warp: 0.35
+  perspective_warp: 0.1
   min_contour_area: 180
   max_contour_area: 800
   pixels_to_meters: 0.00725
@@ -153,7 +157,7 @@ vehicle_params:
   distance_threshold: 0.2
   enable_video_recording: false
   enable_frame_publishing: true
-  use_display: false
+  use_display: true
 
 # HMI Configuration
 hmi:

@@ -257,14 +257,14 @@ class LaneProcessor:
         warped_frame = cv2.warpPerspective(undistorted_frame, M, (W, H), flags=cv2.INTER_LINEAR)
         filtered = cv2.bilateralFilter(warped_frame, d=5, sigmaColor=175, sigmaSpace=175)
         # Convert to HSV and use V channel as gray
-        hsv = cv2.cvtColor(filtered, cv2.COLOR_RGB2HSV)
-        gray = hsv[:, :, 1]  # V channel
+        gray = cv2.cvtColor(filtered, cv2.COLOR_RGB2GRAY)
+        # gray = hsv[:, :, 1]  # V channel
         # gray = cv2.equalizeHist(gray)
         # gray = cv2.GaussianBlur(gray, (7, 7), 0)
-        binary_mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, 2)
+        binary_mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 2)
         # binary_mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 2)
         # binary_mask = cv2.bitwise_or(binary_mask, inv_binary_mask)
-        eroded = cv2.erode(binary_mask, kernel, iterations=3)
+        eroded = cv2.erode(binary_mask, kernel, iterations=1)
         processed_mask = cv2.morphologyEx(eroded, cv2.MORPH_OPEN, kernel, iterations=1)
         # processed_mask = cv2.dilate(processed_mask, kernel, iterations=2)
         # processed_mask = cv2.morphologyEx(processed_mask, cv2.MORPH_CLOSE, kernel, iterations=2)

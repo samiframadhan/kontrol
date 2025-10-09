@@ -8,6 +8,7 @@ import logging
 import threading
 import json
 import multiprocessing
+import simplejpeg as sjpg
 from typing import List, Tuple, Optional
 
 # Assuming these protobuf files are generated and available in the path
@@ -152,14 +153,15 @@ def process_frame(frame_queue, result_queue, config):
         
         # 2. Image Filtering and Thresholding (New Pipeline)
         filtered = cv2.bilateralFilter(img_warped, d=5, sigmaColor=175, sigmaSpace=175)
-        hsv = cv2.cvtColor(filtered, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(filtered, cv2.COLOR_BGR2GRAY)
+        # hsv = cv2.cvtColor(filtered, cv2.COLOR_BGR2HSV)
         # Using saturation channel, which is often robust to lighting changes
-        gray = hsv[:, :, 1] 
-        binary_mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, 2)
+        # gray = hsv[:, :, 1] 
+        binary_mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 2)
         
         # 3. Morphological Operations
         kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-        eroded = cv2.erode(binary_mask, kernel, iterations=3)
+        eroded = cv2.erode(binary_mask, kernel, iterations=2)
         processed_mask = cv2.morphologyEx(eroded, cv2.MORPH_OPEN, kernel, iterations=1)
         
         # 4. Find, Pair Contours, and Find Midpoints
@@ -263,8 +265,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
     
     def __init__(self, node_name: str = "line_follower_node", config_path: str = "config.yaml"):
         # This requires the ManagedNode and ConfigMixin classes to be in the project path
-        super().__init__(node_name)
-        self.load_config(config_path)
+        ManagedNode.__init__(self, node_name)
+        ConfigMixin.__init__(self, config_path)
         
         self.forward_frame_sub = None
         self.reverse_frame_sub = None
@@ -313,15 +315,30 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.sensor_sub_socket.connect(self.get_zmq_url('sensor_data_url'))
             self.sensor_sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('sensor_data_topic'))
             
-            f_url = self.get_zmq_url('camera_frame_url')
-            f_topic = self.get_zmq_topic('camera_frame_topic')
-            r_url = self.get_zmq_url('camera_frame_reverse_url', f_url)
-            r_topic = self.get_zmq_topic('camera_frame_reverse_topic', f_topic)
+            zmq_cfg = self.get_section_config('zmq')
+            f_url = zmq_cfg.get('camera_frame_url')
+            f_topic = zmq_cfg.get('camera_frame_topic')
+            r_url = zmq_cfg.get('camera_frame_reverse_url')
+            r_topic = zmq_cfg.get('camera_frame_reverse_topic')
+
+            if not f_url or not f_topic:
+                raise KeyError("Missing zmq.camera_frame_url or camera_frame_topic in config.yaml")
+            if not r_url or not r_topic:
+                self.logger.warning("Reverse camera ZMQ URL/topic not set; reverse mode will use forward stream.")
+                r_url, r_topic = f_url, f_topic
             
             self.forward_frame_sub = ZMQFrameSubscriber(f_url, f_topic, name="forward_cam")
             self.reverse_frame_sub = ZMQFrameSubscriber(r_url, r_topic, name="reverse_cam")
 
             self.visualizer = Visualizer()
+
+            if self.vehicle_params.get('enable_frame_publishing', False):
+                self.frame_pub_socket = self.context.socket(zmq.PUB)
+                publish_url = self.get_zmq_url('result_pub_url')
+                self.frame_pub_socket.bind(publish_url)
+                self.logger.info(f"Annotated frame publishing enabled. Broadcasting on {publish_url}")
+            else:
+                self.logger.info("Annotated frame publishing is disabled.")
             
             if self.vehicle_params.get('enable_video_recording', False):
                 # Video recording setup...
@@ -380,7 +397,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
     def on_shutdown(self) -> bool:
         self.logger.info("Shutting down Line Following Node...")
         if self.state == "active": self.on_deactivate()
-        # ... cleanup logic ...
+        if self.frame_pub_socket:
+            self.frame_pub_socket.close()
         return True
             
     def _processing_loop(self):
@@ -437,6 +455,24 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 self.current_speed_rpm, 0 # Placeholder
             )
             stacked_output = np.hstack((frame, annotated_warped))
+
+            if self.frame_pub_socket:
+                try:
+                    # Compress the frame using simplejpeg (fast)
+                    # Quality can be adjusted (1-100) to trade quality for bandwidth
+                    jpeg_bytes = sjpg.encode_jpeg(stacked_output, quality=85, colorspace='BGR')
+                    
+                    # Get current time in nanoseconds for latency calculation
+                    timestamp = str(time.time_ns()).encode('utf-8')
+
+                    # Publish as a multipart message [topic, timestamp, jpeg_bytes]
+                    self.frame_pub_socket.send_multipart([
+                        self.get_zmq_topic('result_topic').encode('utf-8'),
+                        timestamp,
+                        jpeg_bytes
+                    ])
+                except Exception as e:
+                    self.logger.error(f"Failed to publish frame: {e}")
             
             if self.vehicle_params.get('use_display', False):
                 cv2.imshow('Lane Following View', stacked_output)
@@ -463,3 +499,4 @@ def main():
 if __name__ == "__main__":
     multiprocessing.freeze_support()
     main()
+
