@@ -44,8 +44,8 @@ zmq:
   steering_cmd_topic: "lane_assist_angle"
   
   # Distance data from ArUco
-  distance_url: "tcp://localhost:5533"
-  distance_topic: "aruco_distance"
+  # distance_url: "tcp://localhost:5533"
+  # distance_topic: "aruco_distance"
   
   # Control commands to LLC
   control_cmd_url: "tcp://localhost:5563"
@@ -70,9 +70,20 @@ zmq:
   # --- For lidar_processor_node ---
   lidar_raw_url: "tcp://localhost:5571" # From simple.rs
 
-  # aruco data
+  # URL untuk kedua sumber ArUco (bisa sama jika port-nya sama)
   distance_url: "tcp://localhost:5555" 
-  distance_topic: "aruco_data"
+  
+  # Definisikan kedua topik secara terpisah
+  distance_topic_forward: "aruco_forward"
+  distance_topic_reverse: "aruco_reverse"
+
+  # Subscriber untuk LIDAR depan (sesuai port di kode Rust)
+  lidar_raw_front_url: "tcp://localhost:5552"
+  lidar_raw_front_topic: "lidar_front"
+  
+  # Subscriber untuk LIDAR belakang (sesuai port di kode Rust)
+  lidar_raw_rear_url: "tcp://localhost:5551"
+  lidar_raw_rear_topic: "lidar_rear"
 
 
 # LIDAR Processing Parameters
@@ -165,6 +176,6 @@ safety_zone:
 
 # NEW: Frame Recording Configuration
 recording:
-  enable: true
+  enable: true  # Set to true to record video, false to disable
   output_dir: "../recordings" # Directory where videos will be saved
   fps: 30 # Framerate for the output video

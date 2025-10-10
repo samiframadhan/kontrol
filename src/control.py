@@ -8,6 +8,7 @@ from managednode import ManagedNode
 from shared_enums import NodeState
 from config_mixin import ConfigMixin
 import steering_command_pb2
+import msgpack # --- DITAMBAHKAN ---
 
 # --- Konstanta ---
 ARUCO_DATA_TIMEOUT = 2.0
@@ -25,7 +26,12 @@ class ControlNode(ManagedNode, ConfigMixin):
         # Sockets
         self.hmi_sub = None
         self.steer_sub = None
-        self.distance_sub = None
+        self.distance_sub_forward = None
+        self.distance_sub_reverse = None
+        # --- DITAMBAHKAN: Subscriber untuk LIDAR mentah ---
+        self.lidar_sub_front = None
+        self.lidar_sub_rear = None
+        # --- AKHIR TAMBAHAN ---
         self.llc_pub = None
         self.direction_pub = None
         self.lidar_cmd_sub = None
@@ -44,8 +50,10 @@ class ControlNode(ManagedNode, ConfigMixin):
         self.aruco_obstacle = False
         self.lidar_command = "GO"
         self.last_aruco_update_time = 0
-        # --- DITAMBAHKAN: Variabel untuk menyimpan ID ArUco pemicu ---
         self.triggering_aruco_id = None
+        # --- DITAMBAHKAN: State baru untuk halangan LIDAR mentah ---
+        self.lidar_obstacle = False
+        # --- AKHIR TAMBAHAN ---
         
         # Threading
         self.processing_thread = None
@@ -64,26 +72,42 @@ class ControlNode(ManagedNode, ConfigMixin):
             self.steer_sub.connect(self.get_zmq_url('steering_cmd_url'))
             self.steer_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('steering_cmd_topic'))
             
-            self.distance_sub = self.context.socket(zmq.SUB)
-            self.distance_sub.connect(self.get_zmq_url('distance_url'))
-            self.distance_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('distance_topic'))
+            distance_url = self.get_zmq_url('distance_url')
+            self.distance_sub_forward = self.context.socket(zmq.SUB)
+            self.distance_sub_forward.connect(distance_url)
+            self.distance_sub_forward.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('distance_topic_forward'))
+            self.distance_sub_reverse = self.context.socket(zmq.SUB)
+            self.distance_sub_reverse.connect(distance_url)
+            self.distance_sub_reverse.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('distance_topic_reverse'))
+
+            # --- DITAMBAHKAN: Setup dua subscriber untuk data LIDAR mentah ---
+            self.lidar_sub_front = self.context.socket(zmq.SUB)
+            self.lidar_sub_front.connect(self.get_zmq_url('lidar_raw_front_url'))
+            self.lidar_sub_front.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('lidar_raw_front_topic'))
+
+            self.lidar_sub_rear = self.context.socket(zmq.SUB)
+            self.lidar_sub_rear.connect(self.get_zmq_url('lidar_raw_rear_url'))
+            self.lidar_sub_rear.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('lidar_raw_rear_topic'))
+            # --- AKHIR TAMBAHAN ---
 
             self.llc_pub = self.context.socket(zmq.PUB)
             self.llc_pub.bind(self.get_zmq_url('control_cmd_url'))
 
-            # Sockets for LIDAR Communication
             self.direction_pub = self.context.socket(zmq.PUB)
             self.direction_pub.bind(self.get_zmq_url('direction_status_url'))
-
             self.lidar_cmd_sub = self.context.socket(zmq.SUB)
             self.lidar_cmd_sub.connect(self.get_zmq_url('lidar_command_url'))
             self.lidar_cmd_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('lidar_command_topic'))
 
-            # Register all sockets to poller
             self.control_poller.register(self.hmi_sub, zmq.POLLIN)
             self.control_poller.register(self.steer_sub, zmq.POLLIN)
-            self.control_poller.register(self.distance_sub, zmq.POLLIN)
+            self.control_poller.register(self.distance_sub_forward, zmq.POLLIN)
+            self.control_poller.register(self.distance_sub_reverse, zmq.POLLIN)
             self.control_poller.register(self.lidar_cmd_sub, zmq.POLLIN)
+            # --- DITAMBAHKAN: Daftarkan subscriber LIDAR ke poller ---
+            self.control_poller.register(self.lidar_sub_front, zmq.POLLIN)
+            self.control_poller.register(self.lidar_sub_rear, zmq.POLLIN)
+            # --- AKHIR TAMBAHAN ---
             return True
         except zmq.ZMQError as e:
             self.logger.error(f"ZMQ Error during configuration: {e}")
@@ -108,7 +132,12 @@ class ControlNode(ManagedNode, ConfigMixin):
         if self.state == NodeState.ACTIVE: self.on_deactivate()
         if self.hmi_sub: self.hmi_sub.close()
         if self.steer_sub: self.steer_sub.close()
-        if self.distance_sub: self.distance_sub.close()
+        if self.distance_sub_forward: self.distance_sub_forward.close()
+        if self.distance_sub_reverse: self.distance_sub_reverse.close()
+        # --- DITAMBAHKAN: Tutup kedua soket LIDAR ---
+        if self.lidar_sub_front: self.lidar_sub_front.close()
+        if self.lidar_sub_rear: self.lidar_sub_rear.close()
+        # --- AKHIR TAMBAHAN ---
         if self.llc_pub: self.llc_pub.close()
         if self.direction_pub: self.direction_pub.close()
         if self.lidar_cmd_sub: self.lidar_cmd_sub.close()
@@ -131,29 +160,38 @@ class ControlNode(ManagedNode, ConfigMixin):
             if self.aruco_obstacle and (time.time() - self.last_aruco_update_time > ARUCO_DATA_TIMEOUT):
                 self.logger.warning("Aruco data timed out. Assuming obstacle is clear.")
                 self.aruco_obstacle = False
-                # --- DITAMBAHKAN: Reset ID saat timeout ---
                 self.triggering_aruco_id = None
 
             socks = dict(self.control_poller.poll(100))
 
             if self.hmi_sub in socks: self._handle_hmi_input()
-            if self.distance_sub in socks: self._handle_distance_input()
             if self.steer_sub in socks: self._handle_steer_input()
             if self.lidar_cmd_sub in socks: self._handle_lidar_input()
+
+            active_distance_sub = self.distance_sub_reverse if self.is_reverse else self.distance_sub_forward
+            if active_distance_sub in socks:
+                self._handle_distance_input(active_socket=active_distance_sub)
+
+            # --- DITAMBAHKAN: Logika pemilihan sumber data LIDAR mentah ---
+            active_lidar_sub = self.lidar_sub_rear if self.is_reverse else self.lidar_sub_front
+            if active_lidar_sub in socks:
+                self._handle_lidar_raw_input(active_socket=active_lidar_sub)
+            # --- AKHIR TAMBAHAN ---
 
             lidar_stop_relevant = \
                 (not self.is_reverse and self.lidar_command == "STOP_DEPAN") or \
                 (self.is_reverse and self.lidar_command == "STOP_BELAKANG")
 
-            if self.aruco_obstacle or lidar_stop_relevant:
+            # --- MODIFIKASI: Tambahkan self.lidar_obstacle ke kondisi berhenti ---
+            if self.aruco_obstacle or lidar_stop_relevant or self.lidar_obstacle:
                 if self.is_running:
-                    # --- DIUBAH: Logika pesan peringatan ---
+                    # --- MODIFIKASI: Logika alasan berhenti diperbarui ---
                     if self.aruco_obstacle:
                         reason = f"ARUCO (ID: {self.triggering_aruco_id})"
-                    else:
+                    elif self.lidar_obstacle:
+                        reason = "RAW_LIDAR (< 2m)" # Alasan baru
+                    else: # Ini pasti lidar_stop_relevant
                         reason = f"LIDAR ({self.lidar_command})"
-                    # --- AKHIR PERUBAHAN ---
-                    
                     self.logger.warning(f"EMERGENCY STOP triggered by: {reason}")
                     self.is_running = False
                     self.time_stopped = time.time()
@@ -164,15 +202,11 @@ class ControlNode(ManagedNode, ConfigMixin):
             
             if self.is_running:
                 effective_desired_speed = abs(self.desired_speed_rpm)
-                
                 lidar_reduce_relevant = \
                     (not self.is_reverse and self.lidar_command == "REDUCE_SPEED_DEPAN") or \
                     (self.is_reverse and self.lidar_command == "REDUCE_SPEED_BELAKANG")
-
                 if lidar_reduce_relevant:
-                    self.logger.info(f"Reducing speed due to relevant LIDAR command: {self.lidar_command}")
                     effective_desired_speed *= (1.0 - speed_reduction_factor)
-                
                 elapsed_time = time.time() - self.time_started
                 self.current_speed_rpm = min(effective_desired_speed, elapsed_time * SPEED_RAMP_RATE)
                 if self.is_reverse:
@@ -190,59 +224,59 @@ class ControlNode(ManagedNode, ConfigMixin):
     def _handle_lidar_input(self):
         topic, msg = self.lidar_cmd_sub.recv_multipart()
         self.lidar_command = msg.decode('utf-8')
-        self.logger.debug(f"Received LIDAR command: {self.lidar_command}")
 
     def _handle_hmi_input(self):
         topic_bytes, msg_bytes = self.hmi_sub.recv_multipart()
         topic = topic_bytes.decode('utf-8')
         command = msg_bytes.decode('utf-8')
-
         if topic == self.get_zmq_topic('hmi_direction_topic'):
             self.is_reverse = (command == "reverse")
         else:
             if command == "START" and not self.is_running:
-                self.is_running = True
-                self.time_stopped = None
-                self.time_started = time.time()
+                self.is_running = True; self.time_stopped = None; self.time_started = time.time()
             elif command == "STOP" and self.is_running:
-                self.is_running = False
-                self.time_stopped = time.time()
-                self.time_started = None
+                self.is_running = False; self.time_stopped = time.time(); self.time_started = None
 
-    # =========================================================================
-    # === FUNGSI INI DIUBAH UNTUK MENANGKAP ID ARUCO PENYEBAB STOP ===
-    # =========================================================================
-    def _handle_distance_input(self):
-        topic_bytes, msg_bytes = self.distance_sub.recv_multipart()
+    def _handle_distance_input(self, active_socket):
+        topic_bytes, msg_bytes = active_socket.recv_multipart()
         msg_string = msg_bytes.decode('utf-8')
-
         try:
             payload = ast.literal_eval(msg_string)
             aruco_data_list = payload.get('data', [])
-
             if not aruco_data_list:
-                self.aruco_obstacle = False
-                # --- DITAMBAHKAN: Reset ID saat tidak ada marker ---
-                self.triggering_aruco_id = None
+                self.aruco_obstacle = False; self.triggering_aruco_id = None
                 return
-
-            # --- DIUBAH: Cari marker terdekat (ID dan jaraknya) ---
             closest_marker = min(aruco_data_list, key=lambda item: item[1])
             trigger_id, min_distance = closest_marker
-            # --- AKHIR PERUBAHAN ---
-
             self.last_aruco_update_time = time.time()
-
             if min_distance < DISTANCE_THRESHOLD:
                 if not self.aruco_obstacle:
                     self.logger.warning(f"ARUCO obstacle detected at {min_distance:.2f} m.")
-                self.aruco_obstacle = True
-                # --- DITAMBAHKAN: Simpan ID pemicu ---
-                self.triggering_aruco_id = trigger_id
-            
+                self.aruco_obstacle = True; self.triggering_aruco_id = trigger_id
         except (ValueError, SyntaxError) as e:
             self.logger.error(f"Failed to parse ArUco data: {msg_string}. Error: {e}")
 
+    # --- DITAMBAHKAN: Fungsi handler baru untuk data LIDAR mentah ---
+    def _handle_lidar_raw_input(self, active_socket):
+        """Menerima dan memproses data mentah dari LIDAR (format MessagePack)."""
+        try:
+            topic, msg_bytes = active_socket.recv_multipart()
+            # Deserialisasi data dari MessagePack
+            lidar_points = msgpack.unpackb(msg_bytes, raw=False)
+            
+            # Cek apakah ADA titik yang jaraknya di bawah 2 meter
+            obstacle_detected = any(point.get('distance_m', 100) < 2.0 for point in lidar_points)
+
+            if obstacle_detected and not self.lidar_obstacle:
+                self.logger.warning(f"LIDAR obstacle detected < 2.0 m.")
+            
+            self.lidar_obstacle = obstacle_detected
+
+        except msgpack.UnpackValueError:
+            self.logger.error("Failed to decode MessagePack data from LIDAR.")
+        except Exception as e:
+            self.logger.error(f"Error processing raw LIDAR data: {e}")
+    # --- AKHIR TAMBAHAN ---
 
     def _handle_steer_input(self):
         topic_bytes, steerangle_bytes, speed_rpm_bytes = self.steer_sub.recv_multipart()
