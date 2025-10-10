@@ -165,5 +165,6 @@ safety_zone:
 
 # NEW: Frame Recording Configuration
 recording:
+  enable: true
   output_dir: "../recordings" # Directory where videos will be saved
   fps: 30 # Framerate for the output video

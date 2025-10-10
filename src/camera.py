@@ -187,7 +187,7 @@ class FrameRecorder:
             return
 
         self.frame_size = (frame_width, frame_height)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"record_{timestamp}.mp4"
         filepath = os.path.join(self.output_dir, filename)
 
