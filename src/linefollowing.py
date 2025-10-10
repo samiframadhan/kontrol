@@ -496,17 +496,12 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             if self.is_reverse:
                 steering_angle_deg *= -1
 
-            # 2. Create and populate the Protobuf message
-            command = steering_command_pb2.SteeringCommand()
-            command.auto_steer_angle = steering_angle_deg
-            command.speed = desired_speed_rpm
-            
-            # 3. Serialize the message to a byte string
-            serialized_command = command.SerializeToString()
-            
-            # 4. Send the topic and the serialized message
-            self.pub_socket.send_string(self.get_zmq_topic('steering_cmd_topic'), flags=zmq.SNDMORE)
-            self.pub_socket.send(serialized_command)
+            # 2. Send as multipart message (topic, angle, speed) as strings
+            self.pub_socket.send_multipart([
+                self.get_zmq_topic('steering_cmd_topic').encode('utf-8'),
+                str(steering_angle_deg).encode('utf-8'),
+                str(desired_speed_rpm).encode('utf-8')
+            ])
 
             warped_view = lane_data.get('warped_image', np.zeros_like(frame))
             annotated_warped = self.visualizer.draw_pipeline_data(

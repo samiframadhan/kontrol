@@ -14,13 +14,13 @@ orchestrator:
 # ZMQ Communication URLs and Topics
 zmq:
   # Camera frame streaming
-  camera_frame_url: "tcp://10.166.30.100:5530"
+  camera_frame_url: "tcp://10.42.0.153:5530"
   # camera_frame_url: "tcp://192.168.55.1:5530"
   camera_frame_topic: "cam_frame"
   
   # Camera frame streaming (reverse)
-  camera_frame_reverse_url: "tcp://10.166.30.224:5530"
-  camera_frame_reverse_topic: "cam_frame_reverse"
+  camera_frame_reverse_url: "tcp://10.42.0.235:5530"
+  camera_frame_reverse_topic: "cam_frame"
 
   result_pub_url: "tcp://*:5538"
   result_sub_url: "tcp://192.168.55.1:5538"
@@ -162,12 +162,12 @@ vehicle_params:
   distance_threshold: 0.2
   enable_video_recording: false
   enable_frame_publishing: true
-  use_display: true
+  use_display: false
 
 # HMI Configuration
 hmi:
-  demo_mode: true
-  serial_port: '/dev/hmi'
+  demo_mode: false
+  serial_port: '/dev/ttyUSB0'
   baud_rate: 115200
 
 # LLC Interface Configuration

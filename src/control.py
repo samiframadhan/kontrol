@@ -245,9 +245,12 @@ class ControlNode(ManagedNode, ConfigMixin):
 
 
     def _handle_steer_input(self):
-        topic, steerangle_deg, speed_rpm = self.steer_sub.recv_multipart()
-        self.current_steer_angle = steerangle_deg
-        self.desired_speed_rpm = speed_rpm
+        topic_bytes, steerangle_bytes, speed_rpm_bytes = self.steer_sub.recv_multipart()
+        try:
+            self.current_steer_angle = float(steerangle_bytes.decode('utf-8'))
+            self.desired_speed_rpm = float(speed_rpm_bytes.decode('utf-8'))
+        except ValueError as e:
+            self.logger.error(f"Failed to parse steer input: {e}")
 
     def _send_llc_command(self, speed, steer, brake):
         command = {"speed_rpm": speed, "steer_angle": steer, "brake_force": brake}
