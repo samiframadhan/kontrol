@@ -71,13 +71,14 @@ class ControlNode(ManagedNode, ConfigMixin):
             self.steer_sub = self.context.socket(zmq.SUB)
             self.steer_sub.connect(self.get_zmq_url('steering_cmd_url'))
             self.steer_sub.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('steering_cmd_topic'))
-            
-            distance_url = self.get_zmq_url('distance_url')
+
+            distance_forward_url = self.get_zmq_url('distance_forward_url')
+            distance_reverse_url = self.get_zmq_url('distance_reverse_url')
             self.distance_sub_forward = self.context.socket(zmq.SUB)
-            self.distance_sub_forward.connect(distance_url)
+            self.distance_sub_forward.connect(distance_forward_url)
             self.distance_sub_forward.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('distance_topic_forward'))
             self.distance_sub_reverse = self.context.socket(zmq.SUB)
-            self.distance_sub_reverse.connect(distance_url)
+            self.distance_sub_reverse.connect(distance_reverse_url)
             self.distance_sub_reverse.setsockopt_string(zmq.SUBSCRIBE, self.get_zmq_topic('distance_topic_reverse'))
 
             # --- DITAMBAHKAN: Setup dua subscriber untuk data LIDAR mentah ---
