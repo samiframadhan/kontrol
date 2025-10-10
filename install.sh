@@ -60,19 +60,22 @@ for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
     service_name=$(basename "${node_script%.py}").service
     service_file_path="$SERVICE_FILES_DIR/$service_name"
     venv_python_path="$PROJECT_DIR/$VENV_NAME/bin/python"
-    script_path="$PROJECT_DIR/$node_script"
+    
+    # Define the working directory as the script's own directory
+    working_dir="$PROJECT_DIR/$(dirname "$node_script")"
+    script_filename=$(basename "$node_script")
 
     echo "Creating service file: $service_file_path"
     tee "$service_file_path" > /dev/null << EOL
 [Unit]
-Description=Kontrol Service for $(basename "$node_script")
+Description=Kontrol Service for $script_filename
 After=network.target
 
 [Service]
 User=$RUN_AS_USER
 Group=$RUN_AS_GROUP
-WorkingDirectory=$PROJECT_DIR
-ExecStart=$venv_python_path $script_path
+WorkingDirectory=$working_dir
+ExecStart=$venv_python_path $script_filename
 Restart=always
 RestartSec=5
 
