@@ -14,16 +14,16 @@ orchestrator:
 # ZMQ Communication URLs and Topics
 zmq:
   # Camera frame streaming
-  # camera_frame_url: "tcp://10.42.0.153:5530"
-  camera_frame_url: "tcp://192.168.0.103:5530"
+  camera_frame_url: "tcp://10.166.30.100:5530"
+  # camera_frame_url: "tcp://192.168.55.1:5530"
   camera_frame_topic: "cam_frame"
   
   # Camera frame streaming (reverse)
-  camera_frame_reverse_url: "tcp://10.166.30.36:5530"
+  camera_frame_reverse_url: "tcp://10.166.30.224:5530"
   camera_frame_reverse_topic: "cam_frame_reverse"
 
   result_pub_url: "tcp://*:5538"
-  result_sub_url: "tcp://127.0.0.1:5538"
+  result_sub_url: "tcp://192.168.55.1:5538"
   result_topic: "result_frame"
 
   obstacle_data_url: "tcp://*:5571"

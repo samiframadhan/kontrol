@@ -501,7 +501,7 @@ def main():
         # --- Run from ZMQ STREAM (Original Behavior) ---
         logger.info("Using ZMQ stream source.")
         zmq_url = zmq_config['camera_frame_url'].replace('*', zmq_config.get('publisher_ip', 'localhost'))
-        zmq_topic = zmq_config['camera_frame_reverse_topic']
+        zmq_topic = zmq_config['camera_frame_topic']
 
         message_queue = mp.Queue(maxsize=2)
         shutdown_event = mp.Event()

@@ -245,11 +245,9 @@ class ControlNode(ManagedNode, ConfigMixin):
 
 
     def _handle_steer_input(self):
-        topic, serialized_data = self.steer_sub.recv_multipart()
-        command = steering_command_pb2.SteeringCommand()
-        command.ParseFromString(serialized_data)
-        self.current_steer_angle = command.auto_steer_angle
-        self.desired_speed_rpm = command.speed
+        topic, steerangle_deg, speed_rpm = self.steer_sub.recv_multipart()
+        self.current_steer_angle = steerangle_deg
+        self.desired_speed_rpm = speed_rpm
 
     def _send_llc_command(self, speed, steer, brake):
         command = {"speed_rpm": speed, "steer_angle": steer, "brake_force": brake}

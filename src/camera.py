@@ -7,6 +7,7 @@ import multiprocessing as mp
 import numpy as np
 import time
 import simplejpeg as sjpg
+from typing import Union
 
 class ZMQFrameSubscriber:
     """
@@ -125,7 +126,7 @@ class ZMQFrameSubscriber:
             self._logger.warning(f"Failed to get or decode frame from queue: {e}")
 
 
-    def get_latest(self) -> np.ndarray | None:
+    def get_latest(self) -> Union[np.ndarray, None]:
         """
         Non-blocking call to get the most recent frame.
         Returns the latest available frame or None if no frame has been received.
@@ -134,13 +135,13 @@ class ZMQFrameSubscriber:
         with self._lock:
             return None if self._latest_frame is None else self._latest_frame.copy()
 
-    def get_timestamp_ns(self) -> int | None:
+    def get_timestamp_ns(self) -> Union[int, None]:
         """Returns the nanosecond timestamp of the latest frame."""
         self._update_latest_frame()
         with self._lock:
             return self._timestamp_ns
         
-    def get_latency_ms(self) -> float | None:
+    def get_latency_ms(self) -> Union[float, None]:
         """Returns the calculated latency in milliseconds of the latest frame."""
         self._update_latest_frame()
         with self._lock:

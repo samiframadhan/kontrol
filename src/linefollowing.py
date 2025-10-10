@@ -12,7 +12,7 @@ import simplejpeg as sjpg
 from typing import List, Tuple, Optional
 
 # Assuming these protobuf files are generated and available in the path
-# import steering_command_pb2
+import steering_command_pb2
 # import frame_data_pb2
 
 # Assuming these are part of your project structure
@@ -401,6 +401,12 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.frame_pub_socket.close()
         if self.hmi_sub_socket:
             self.hmi_sub_socket.close()
+        if self.hmi_max_speed_sub:
+            self.hmi_max_speed_sub.close()
+        if self.sensor_sub_socket:
+            self.sensor_sub_socket.close()
+        if self.pub_socket:
+            self.pub_socket.close()
         return True
             
     def _processing_loop(self):
@@ -480,7 +486,27 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             )
             
             # Publishing and visualization logic (remains unchanged)
-            # ...
+            # --- Publish Steering Command ---
+            
+            # 1. Convert calculated values to the required units (degrees and RPM)
+            steering_angle_deg = math.degrees(steering_angle_rad)
+            desired_speed_rpm = desired_speed_ms / self.vehicle_params['rpm_to_mps_factor']
+
+            # In reverse, the Stanley controller's steering angle needs to be inverted
+            if self.is_reverse:
+                steering_angle_deg *= -1
+
+            # 2. Create and populate the Protobuf message
+            command = steering_command_pb2.SteeringCommand()
+            command.auto_steer_angle = steering_angle_deg
+            command.speed = desired_speed_rpm
+            
+            # 3. Serialize the message to a byte string
+            serialized_command = command.SerializeToString()
+            
+            # 4. Send the topic and the serialized message
+            self.pub_socket.send_string(self.get_zmq_topic('steering_cmd_topic'), flags=zmq.SNDMORE)
+            self.pub_socket.send(serialized_command)
 
             warped_view = lane_data.get('warped_image', np.zeros_like(frame))
             annotated_warped = self.visualizer.draw_pipeline_data(
