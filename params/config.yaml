@@ -86,34 +86,12 @@ lidar_control:
   speed_reduction_factor: 0.6 # Reduce speed by 60% of desired speed
 
 # Add this section to your config.yaml
-realsense_cameras:
+cameras:
   forward_camera_name: 'Intel RealSense D435'  # The name of your forward-facing camera
   reverse_camera_name: 'Intel RealSense D415'  # The name of your reverse-facing camera
   frame_width: 640
   frame_height: 480
   frame_fps: 30
-
-# Camera Configuration
-camera:
-  forward:
-    camera_source: "realsense"
-    device_name: "Intel RealSense D435"
-    frame_width: 640
-    frame_height: 480
-    frame_fps: 30
-    video_output_file: 'forward_view.mp4'
-    use_display: true
-  
-  reverse:
-    camera_source: "realsense"
-    device_name: "Intel RealSense D415"
-    # camera_source: "opencv"
-    # source: 0  # Use OpenCV for forward camera
-    frame_width: 640
-    frame_height: 480
-    frame_fps: 30
-    video_output_file: 'reverse_view.mp4'
-    use_display: false
 
 # ArUco Detection Configuration
 aruco:
@@ -187,6 +165,5 @@ safety_zone:
 
 # NEW: Frame Recording Configuration
 recording:
-  enable: true  # Set to true to record video, false to disable
   output_dir: "../recordings" # Directory where videos will be saved
   fps: 30 # Framerate for the output video

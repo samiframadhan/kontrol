@@ -1,4 +1,5 @@
 # frame_viewer_new.py
+from datetime import datetime
 import cv2
 import yaml
 import logging
@@ -8,7 +9,7 @@ import time
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
-from camera import ZMQFrameSubscriber 
+from camera import FrameRecorder, ZMQFrameSubscriber 
 
 def setup_logging():
     """Configures the logging for the application."""
@@ -64,7 +65,9 @@ def main():
     
     # 2. Start the background process
     subscriber.start()
-    
+
+    record_cfg = config.get('recording', {})
+    frame_recorder = FrameRecorder(record_cfg)
     logger.info("Main thread started. Waiting for frames from subscriber process...")
     
     try:
@@ -81,6 +84,11 @@ def main():
                     latency_text = f"Latency: {latency:.1f} ms"
                     cv2.putText(frame, latency_text, (10, 30), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                
+                if record_cfg.get('enable', False):
+                    if not frame_recorder.is_recording:
+                        frame_recorder.start(frame.shape[1], frame.shape[0])
+                    frame_recorder.write(frame)
                 
                 cv2.imshow("Remote Frame Viewer", frame)
             else:

@@ -1,3 +1,4 @@
+import os
 import cv2
 import datetime
 import math
@@ -18,7 +19,7 @@ import steering_command_pb2
 # Assuming these are part of your project structure
 from managednode import ManagedNode
 from config_mixin import ConfigMixin
-from camera import ZMQFrameSubscriber
+from camera import FrameRecorder, ZMQFrameSubscriber
 
 
 def setup_logging():
@@ -281,6 +282,7 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         self.hmi_max_speed_sub = None
         self.sensor_sub_socket = None
         self.result_writer = None
+        self.recorder = None
         self.frame_pub_socket = None
         self.is_reverse = False
         self.current_speed_rpm = 0.0
@@ -341,7 +343,13 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 self.logger.info("Annotated frame publishing is disabled.")
             
             if self.vehicle_params.get('enable_video_recording', False):
-                # Video recording setup...
+                record_cfg = self.get_section_config('recording')
+                if not record_cfg.get('enable', False):
+                    self.logger.warning("Video recording is disabled in config, but enable_video_recording is True.")
+                if not os.path.exists(record_cfg.get('output_dir', './recordings')):
+                    os.makedirs(record_cfg.get('output_dir', './recordings'))
+                self.recorder = FrameRecorder(record_cfg)
+                
                 pass
 
             self.logger.info("Configuration successful.")
@@ -407,6 +415,9 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             self.sensor_sub_socket.close()
         if self.pub_socket:
             self.pub_socket.close()
+        if self.result_writer:
+            self.result_writer.release()
+        self.logger.info("Line Following Node shutdown complete.")
         return True
             
     def _processing_loop(self):
@@ -533,7 +544,12 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     self.shutdown_event.set()
                     break
-        
+
+            if self.recorder:
+                if not self.recorder.is_recording:
+                    self.recorder.start(stacked_output.shape[1], stacked_output.shape[0])
+                self.recorder.write(stacked_output)
+
         self.logger.info("Line Following processing loop terminated.")
 
 def main():

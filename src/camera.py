@@ -1,5 +1,7 @@
 # camera.py
 
+import datetime
+import os
 import cv2
 import zmq
 import logging
@@ -163,3 +165,55 @@ class ZMQFrameSubscriber:
         self._process = None
         self._queue = None
         self._logger.info("Stopped.")
+
+class FrameRecorder:
+    """Handles optional video recording of processed frames."""
+    def __init__(self, config: dict):
+        self.is_enabled = config.get('enable', False)
+        self.output_dir = config.get('output_dir', '../recordings')
+        self.fps = config.get('fps', 30)
+        self.writer = None
+        self.is_recording = False
+        self.frame_size = None  # (width, height)
+        self.logger = logging.getLogger("FrameRecorder")
+
+        if self.is_enabled:
+            os.makedirs(self.output_dir, exist_ok=True)
+            self.logger.info(f"Recording enabled. Output will be saved to '{self.output_dir}'")
+
+    def start(self, frame_width: int, frame_height: int):
+        """Starts a new recording session with a timestamped filename."""
+        if not self.is_enabled or self.is_recording:
+            return
+
+        self.frame_size = (frame_width, frame_height)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"record_{timestamp}.mp4"
+        filepath = os.path.join(self.output_dir, filename)
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        try:
+            self.writer = cv2.VideoWriter(filepath, fourcc, self.fps, self.frame_size)
+            if not self.writer.isOpened():
+                self.logger.error(f"Failed to open VideoWriter for filepath: {filepath}")
+                self.is_enabled = False  # Disable further attempts
+                return
+            self.is_recording = True
+            self.logger.info(f"Started recording to {filepath}")
+        except Exception as e:
+            self.logger.error(f"Exception while creating VideoWriter: {e}")
+            self.is_enabled = False  # Disable further attempts
+
+    def write(self, frame: np.ndarray):
+        """Writes a single frame to the video file."""
+        if self.is_recording and self.writer is not None:
+            self.writer.write(frame)
+
+    def stop(self):
+        """Stops the recording and releases the video writer."""
+        if self.is_recording and self.writer is not None:
+            self.writer.release()
+            self.is_recording = False
+            self.writer = None
+            self.frame_size = None
+            self.logger.info("Recording stopped and file saved.")
