@@ -70,6 +70,11 @@ zmq:
   # --- For lidar_processor_node ---
   lidar_raw_url: "tcp://localhost:5571" # From simple.rs
 
+  # aruco data
+  distance_url: "tcp://localhost:5555" 
+  distance_topic: "aruco_data"
+
+
 # LIDAR Processing Parameters
 lidar_processor:
   direction_timeout: 2.0 # seconds
