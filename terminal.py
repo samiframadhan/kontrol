@@ -3,7 +3,7 @@ import zmq
 import json
 import logging
 import curses
-from shared_enums import NodeState
+from src.shared_enums import NodeState
 
 # --- Configuration ---
 STATE_SUB_URL = "tcp://localhost:5560"
@@ -232,5 +232,5 @@ def main(stdscr):
     TUIClient(stdscr).run()
 
 if __name__ == "__main__":
-    # Ensure shared_enums.py is in the same directory
+    # Ensure src/shared_enums.py exists and the script is run from the project root
     curses.wrapper(main)

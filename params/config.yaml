@@ -167,7 +167,7 @@ vehicle_params:
 # HMI Configuration
 hmi:
   demo_mode: false
-  serial_port: '/dev/ttyUSB0'
+  serial_port: '/dev/hmi'
   baud_rate: 115200
 
 # LLC Interface Configuration
