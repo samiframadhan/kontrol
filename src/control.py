@@ -3,13 +3,13 @@ import time
 import math
 import logging
 import threading
+import ast
 from managednode import ManagedNode
 from shared_enums import NodeState
 from config_mixin import ConfigMixin
 import steering_command_pb2
 
-# --- Constants ---
-# These could also be moved to config.yaml for more flexibility
+# --- Konstanta ---
 ARUCO_DATA_TIMEOUT = 2.0
 DISTANCE_THRESHOLD = 1.7
 SPEED_RAMP_RATE = 500
@@ -27,8 +27,8 @@ class ControlNode(ManagedNode, ConfigMixin):
         self.steer_sub = None
         self.distance_sub = None
         self.llc_pub = None
-        self.direction_pub = None # To publish direction to lidar_processor
-        self.lidar_cmd_sub = None # To receive commands from lidar_processor
+        self.direction_pub = None
+        self.lidar_cmd_sub = None
         self.control_poller = zmq.Poller()
 
         # State
@@ -42,8 +42,10 @@ class ControlNode(ManagedNode, ConfigMixin):
         
         # Obstacle States
         self.aruco_obstacle = False
-        self.lidar_command = "GO" # Can be "GO", "REDUCE_SPEED_*", "STOP_*"
+        self.lidar_command = "GO"
         self.last_aruco_update_time = 0
+        # --- DITAMBAHKAN: Variabel untuk menyimpan ID ArUco pemicu ---
+        self.triggering_aruco_id = None
         
         # Threading
         self.processing_thread = None
@@ -69,7 +71,7 @@ class ControlNode(ManagedNode, ConfigMixin):
             self.llc_pub = self.context.socket(zmq.PUB)
             self.llc_pub.bind(self.get_zmq_url('control_cmd_url'))
 
-            # --- Sockets for LIDAR Communication ---
+            # Sockets for LIDAR Communication
             self.direction_pub = self.context.socket(zmq.PUB)
             self.direction_pub.bind(self.get_zmq_url('direction_status_url'))
 
@@ -104,8 +106,6 @@ class ControlNode(ManagedNode, ConfigMixin):
     def on_shutdown(self) -> bool:
         self.logger.info("Shutting down Control Node...")
         if self.state == NodeState.ACTIVE: self.on_deactivate()
-        
-        # Close all sockets
         if self.hmi_sub: self.hmi_sub.close()
         if self.steer_sub: self.steer_sub.close()
         if self.distance_sub: self.distance_sub.close()
@@ -115,7 +115,6 @@ class ControlNode(ManagedNode, ConfigMixin):
         return True
 
     def _publish_direction(self):
-        """Broadcasts the current vehicle direction for other nodes."""
         direction_str = "REVERSE" if self.is_reverse else "FORWARD"
         self.direction_pub.send_string(self.get_zmq_topic('direction_status_topic'), flags=zmq.SNDMORE)
         self.direction_pub.send_string(direction_str)
@@ -125,46 +124,47 @@ class ControlNode(ManagedNode, ConfigMixin):
         last_direction_publish_time = 0
         
         while self.active_event.is_set():
-            # Periodically publish direction for the lidar node
             if time.time() - last_direction_publish_time > 0.5:
                 self._publish_direction()
                 last_direction_publish_time = time.time()
 
-            # Check for Aruco data timeout
             if self.aruco_obstacle and (time.time() - self.last_aruco_update_time > ARUCO_DATA_TIMEOUT):
                 self.logger.warning("Aruco data timed out. Assuming obstacle is clear.")
                 self.aruco_obstacle = False
+                # --- DITAMBAHKAN: Reset ID saat timeout ---
+                self.triggering_aruco_id = None
 
             socks = dict(self.control_poller.poll(100))
 
-            # --- Handle All Inputs ---
             if self.hmi_sub in socks: self._handle_hmi_input()
             if self.distance_sub in socks: self._handle_distance_input()
             if self.steer_sub in socks: self._handle_steer_input()
             if self.lidar_cmd_sub in socks: self._handle_lidar_input()
 
-            # --- Decision Logic ---
-            # ** NEW: Check if the LIDAR command is relevant to our direction **
             lidar_stop_relevant = \
                 (not self.is_reverse and self.lidar_command == "STOP_DEPAN") or \
                 (self.is_reverse and self.lidar_command == "STOP_BELAKANG")
 
             if self.aruco_obstacle or lidar_stop_relevant:
                 if self.is_running:
-                    reason = "ARUCO" if self.aruco_obstacle else f"LIDAR ({self.lidar_command})"
+                    # --- DIUBAH: Logika pesan peringatan ---
+                    if self.aruco_obstacle:
+                        reason = f"ARUCO (ID: {self.triggering_aruco_id})"
+                    else:
+                        reason = f"LIDAR ({self.lidar_command})"
+                    # --- AKHIR PERUBAHAN ---
+                    
                     self.logger.warning(f"EMERGENCY STOP triggered by: {reason}")
                     self.is_running = False
                     self.time_stopped = time.time()
                     self.time_started = None
             
-            # --- Calculate Propulsion ---
             speed_reduction_factor = self.get_section_config('lidar_control')['speed_reduction_factor']
             brake_force = 0
             
             if self.is_running:
                 effective_desired_speed = abs(self.desired_speed_rpm)
                 
-                # ** NEW: Check if the speed reduction is relevant to our direction **
                 lidar_reduce_relevant = \
                     (not self.is_reverse and self.lidar_command == "REDUCE_SPEED_DEPAN") or \
                     (self.is_reverse and self.lidar_command == "REDUCE_SPEED_BELAKANG")
@@ -187,7 +187,6 @@ class ControlNode(ManagedNode, ConfigMixin):
             self._send_llc_command(self.current_speed_rpm, self.current_steer_angle, brake_force)
             time.sleep(0.02)
 
-    # --- Input Handler Methods ---
     def _handle_lidar_input(self):
         topic, msg = self.lidar_cmd_sub.recv_multipart()
         self.lidar_command = msg.decode('utf-8')
@@ -200,7 +199,7 @@ class ControlNode(ManagedNode, ConfigMixin):
 
         if topic == self.get_zmq_topic('hmi_direction_topic'):
             self.is_reverse = (command == "reverse")
-        else: # Must be hmi_cmd_topic
+        else:
             if command == "START" and not self.is_running:
                 self.is_running = True
                 self.time_stopped = None
@@ -210,15 +209,40 @@ class ControlNode(ManagedNode, ConfigMixin):
                 self.time_stopped = time.time()
                 self.time_started = None
 
+    # =========================================================================
+    # === FUNGSI INI DIUBAH UNTUK MENANGKAP ID ARUCO PENYEBAB STOP ===
+    # =========================================================================
     def _handle_distance_input(self):
-        topic, msg = self.distance_sub.recv_multipart()
-        distance = float(msg.decode('utf-8'))
-        self.last_aruco_update_time = time.time()
-        if distance < DISTANCE_THRESHOLD:
-            if not self.aruco_obstacle:
-                self.logger.warning(f"ARUCO obstacle detected at {distance:.2f} m.")
-            self.aruco_obstacle = True
-        # Note: We don't set it back to False here; the timeout handles that.
+        topic_bytes, msg_bytes = self.distance_sub.recv_multipart()
+        msg_string = msg_bytes.decode('utf-8')
+
+        try:
+            payload = ast.literal_eval(msg_string)
+            aruco_data_list = payload.get('data', [])
+
+            if not aruco_data_list:
+                self.aruco_obstacle = False
+                # --- DITAMBAHKAN: Reset ID saat tidak ada marker ---
+                self.triggering_aruco_id = None
+                return
+
+            # --- DIUBAH: Cari marker terdekat (ID dan jaraknya) ---
+            closest_marker = min(aruco_data_list, key=lambda item: item[1])
+            trigger_id, min_distance = closest_marker
+            # --- AKHIR PERUBAHAN ---
+
+            self.last_aruco_update_time = time.time()
+
+            if min_distance < DISTANCE_THRESHOLD:
+                if not self.aruco_obstacle:
+                    self.logger.warning(f"ARUCO obstacle detected at {min_distance:.2f} m.")
+                self.aruco_obstacle = True
+                # --- DITAMBAHKAN: Simpan ID pemicu ---
+                self.triggering_aruco_id = trigger_id
+            
+        except (ValueError, SyntaxError) as e:
+            self.logger.error(f"Failed to parse ArUco data: {msg_string}. Error: {e}")
+
 
     def _handle_steer_input(self):
         topic, serialized_data = self.steer_sub.recv_multipart()
