@@ -22,15 +22,20 @@ class HMINode(ManagedNode, ConfigMixin):
         self.read_queue = Queue()
 
         self.is_reverse = False
+        self.demo_mode = False
 
     def on_configure(self) -> bool:
         self.logger.info("Configuring HMI Node...")
         try:
             hmi_config = self.get_section_config('hmi')
+            self.demo_mode = hmi_config.get('demo_mode', False)
             
             # Configure Serial Port
-            self.ser = serial.Serial(hmi_config['serial_port'], hmi_config['baud_rate'], timeout=1)
-            self.logger.info(f"Successfully opened serial port {hmi_config['serial_port']}")
+            if not self.demo_mode:
+                self.ser = serial.Serial(hmi_config['serial_port'], hmi_config['baud_rate'], timeout=1)
+                self.logger.info(f"Successfully opened serial port {hmi_config['serial_port']}")
+            else:
+                self.logger.warning("DEMO MODE is active. Serial port is NOT being used.")
             
             # Configure ZMQ Publisher for outgoing HMI commands (START/STOP/DIRECTION)
             self.cmd_pub = self.context.socket(zmq.PUB)
@@ -58,13 +63,24 @@ class HMINode(ManagedNode, ConfigMixin):
                 self.read_queue.get_nowait()
 
             # Start all threads
-            io_thread = threading.Thread(target=self._serial_io_thread, name="SerialIOThread")
             sensor_thread = threading.Thread(target=self._sensor_subscriber_thread, name="SensorSubThread")
             command_thread = threading.Thread(target=self._command_processor_thread, name="CommandProcThread")
             
-            self.threads = [io_thread, sensor_thread, command_thread]
+            self.threads = [sensor_thread, command_thread]
+
+            if self.demo_mode:
+                self.logger.info("Starting threads for DEMO MODE...")
+                kbd_thread = threading.Thread(target=self._keyboard_input_thread, name="KeyboardInputThread")
+                demo_out_thread = threading.Thread(target=self._demo_output_thread, name="DemoOutputThread")
+                self.threads.extend([kbd_thread, demo_out_thread])
+            else:
+                self.logger.info("Starting threads for normal operation...")
+                io_thread = threading.Thread(target=self._serial_io_thread, name="SerialIOThread")
+                self.threads.append(io_thread)
+            
             for t in self.threads:
                 t.start()
+
             
             self.logger.info("All HMI Node threads started.")
             return True
@@ -108,7 +124,8 @@ class HMINode(ManagedNode, ConfigMixin):
         # The HMI requires commands to be terminated by three null bytes
         full_command = command_string.encode('ascii') + b'\xFF\xFF\xFF'
         self.send_queue.put(full_command)
-        self.logger.debug(f"Queued for HMI: {command_string}")
+        if not self.demo_mode:
+            self.logger.debug(f"Queued for HMI: {command_string}")
 
     def _update_hmi_from_sensors(self, sensor_data):
         """Translate sensor data into HMI commands."""
@@ -242,6 +259,65 @@ class HMINode(ManagedNode, ConfigMixin):
                     self.logger.error(f"Error in command processor: {e}", exc_info=True)
                 break
         self.logger.info("Command processor thread finished.")
+
+    def _keyboard_input_thread(self):
+        """Handles keyboard input to simulate HMI commands in demo mode."""
+        self.logger.info("Keyboard input thread started for DEMO MODE.")
+        self.logger.info("Enter commands: 'start', 'stop', 'fwd', 'rev', 'speed [0-255]', 'quit'")
+        while not self.shutdown_event.is_set():
+            try:
+                cmd = input("HMI > ").strip().lower()
+                if cmd == 'start':
+                    self.logger.info("Keyboard: Sending START command.")
+                    self.cmd_pub.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
+                    self.cmd_pub.send_string("START")
+                elif cmd == 'stop':
+                    self.logger.info("Keyboard: Sending STOP command.")
+                    self.cmd_pub.send_string(self.get_zmq_topic('hmi_cmd_topic'), flags=zmq.SNDMORE)
+                    self.cmd_pub.send_string("STOP")
+                elif cmd == 'fwd':
+                    self.logger.info("Keyboard: Sending DIRECTION command: forward.")
+                    self.cmd_pub.send_string(self.get_zmq_topic('hmi_direction_topic'), flags=zmq.SNDMORE)
+                    self.cmd_pub.send_string("forward")
+                elif cmd == 'rev':
+                    self.logger.info("Keyboard: Sending DIRECTION command: reverse.")
+                    self.cmd_pub.send_string(self.get_zmq_topic('hmi_direction_topic'), flags=zmq.SNDMORE)
+                    self.cmd_pub.send_string("reverse")
+                elif cmd.startswith('speed '):
+                    try:
+                        speed_val = int(cmd.split(' ')[1])
+                        if 0 <= speed_val <= 255:
+                            max_speed_rpm = int((speed_val / 3.6) / 0.0025)
+                            self.logger.info(f"Keyboard: Setting max speed to {speed_val} km/h ({max_speed_rpm} RPM).")
+                            self.cmd_pub.send_string(self.get_zmq_topic('hmi_max_speed_topic'), flags=zmq.SNDMORE)
+                            self.cmd_pub.send_string(str(max_speed_rpm))
+                        else:
+                            self.logger.warning("Speed must be between 0 and 255.")
+                    except (ValueError, IndexError):
+                        self.logger.warning("Invalid speed command. Use 'speed [0-255]'.")
+                elif cmd == 'quit':
+                    self.logger.info("Quit command received, shutting down.")
+                    self.shutdown_event.set()
+                    break
+            except (EOFError, KeyboardInterrupt):
+                if not self.shutdown_event.is_set():
+                    self.logger.info("Keyboard input ended, shutting down.")
+                    self.shutdown_event.set()
+                break
+        self.logger.info("Keyboard thread terminated")
+    def _demo_output_thread(self):
+        """In demo mode, prints commands from the send_queue to the console."""
+        self.logger.info("Demo output thread started.")
+        while not self.shutdown_event.is_set():
+            try:
+                command_to_send = self.send_queue.get(timeout=0.1)
+                # Decode for printing, remove the HMI-specific null terminators
+                printable_cmd = command_to_send.replace(b'\xFF\xFF\xFF', b'').decode('ascii', errors='ignore')
+                self.logger.info(f"[TO HMI] > {printable_cmd}")
+                self.send_queue.task_done()
+            except Empty:
+                continue # Queue is empty, just loop again
+        self.logger.info("Demo output thread finished.")
 
 
 if __name__ == "__main__":

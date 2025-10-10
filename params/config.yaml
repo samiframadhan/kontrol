@@ -97,7 +97,7 @@ camera:
     frame_height: 480
     frame_fps: 30
     video_output_file: 'forward_view.mp4'
-    use_display: false
+    use_display: true
   
   reverse:
     camera_source: "realsense"
@@ -161,6 +161,7 @@ vehicle_params:
 
 # HMI Configuration
 hmi:
+  demo_mode: true
   serial_port: '/dev/hmi'
   baud_rate: 115200
 

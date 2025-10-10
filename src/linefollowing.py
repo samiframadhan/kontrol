@@ -399,6 +399,8 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         if self.state == "active": self.on_deactivate()
         if self.frame_pub_socket:
             self.frame_pub_socket.close()
+        if self.hmi_sub_socket:
+            self.hmi_sub_socket.close()
         return True
             
     def _processing_loop(self):
@@ -408,9 +410,38 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
         sc_config = self.get_section_config('stanley_controller')
         
         # Poller setup... (omitted for brevity, remains unchanged)
+        poller = zmq.Poller()
+        poller.register(self.hmi_sub_socket, zmq.POLLIN)
+        poller.register(self.sensor_sub_socket, zmq.POLLIN)
+        poller.register(self.hmi_max_speed_sub, zmq.POLLIN)
 
         while self.active_event.is_set() and not self.shutdown_event.is_set():
             # ZMQ message polling... (omitted for brevity, remains unchanged)
+            # Poll for ZMQ messages with a short timeout to not block frame handling
+            socks = dict(poller.poll(timeout=5))
+
+            if self.hmi_sub_socket in socks:
+                topic, msg = self.hmi_sub_socket.recv_multipart()
+                self.is_reverse = msg.decode('utf-8') == 'reverse'
+                self.logger.info(f"Direction changed to {'REVERSE' if self.is_reverse else 'FORWARD'}")
+            
+            if self.hmi_max_speed_sub in socks:
+                topic, msg = self.hmi_max_speed_sub.recv_multipart()
+                try:
+                    self.current_max_speed = float(msg.decode('utf-8'))
+                    self.logger.info(f"Max speed updated to {self.current_max_speed} RPM.")
+                except ValueError:
+                    self.logger.warning(f"Invalid max speed value received: {msg.decode('utf-8')}")
+
+            if self.sensor_sub_socket in socks:
+                topic, sensor_data_json = self.sensor_sub_socket.recv_multipart()
+                try:
+                    sensor_data = json.loads(sensor_data_json.decode('utf-8'))
+                    self.current_speed_rpm = sensor_data.get('rpm', 0.0)
+                    self.last_sensor_update = time.time()
+                except (json.JSONDecodeError, KeyError) as e:
+                    self.logger.warning(f"Failed to parse sensor data: {e}")
+            
             
             frame_source = self.reverse_frame_sub if self.is_reverse else self.forward_frame_sub
             frame = frame_source.get_latest()
@@ -418,11 +449,13 @@ class LineFollowingNode(ManagedNode, ConfigMixin):
             if frame is None:
                 time.sleep(0.005)
                 continue
+            # frame = sjpg.decode_jpeg(frame, colorspace='BGR')
             
             try:
                 self.frame_queue.put_nowait(frame)
             except multiprocessing.queues.Full:
-                self.logger.warning("Frame queue for vision process is full. Dropping frame.")
+                # self.logger.warning("Frame queue for vision process is full. Dropping frame.")
+                pass
 
             try:
                 lane_data = self.result_queue.get_nowait()

@@ -45,11 +45,11 @@ def main():
     
     try:
         zmq_config = config.get('zmq', {})
-        zmq_url_template = zmq_config.get('camera_frame_url')
-        zmq_topic = zmq_config.get('camera_frame_topic')
+        zmq_url_template = zmq_config.get('result_sub_url')
+        zmq_topic = zmq_config.get('result_topic')
 
         if not zmq_url_template or not zmq_topic:
-            logger.error("'camera_frame_url' or 'camera_frame_topic' not found in config.yaml")
+            logger.error("'result_sub_url' or 'camera_frame_topic' not found in config.yaml")
             return
 
         zmq_url = zmq_url_template.replace('*', PUBLISHER_IP)
