@@ -7,10 +7,9 @@
 
 # Define the list of services to be restarted
 services=(
-  "aruco.service"
-  "control.service"
+  "control_node.service"
   "hmi_node.service"
-  "linefollowing_node.service"
+  "imageprocess_node.service"
   "llc_interface.service"
   "orchestrator.service"
 )

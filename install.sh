@@ -4,12 +4,13 @@
 VENV_NAME=".venv"
 
 # List of standard nodes that run as a single instance
+# Paths are relative to the project directory (where install.sh is)
 STANDARD_PYTHON_NODES=(
-    "control.py"
-    "hmi_node.py"
-    "linefollowing_node.py"
-    "llc_interface.py"
-    "orchestrator.py"
+    "nodes/control_node.py"
+    "nodes/hmi_node.py"
+    "nodes/imageprocess_node.py"
+    "nodes/llc_interface.py"
+    "src/orchestrator.py"
 )
 
 # --- Boilerplate ---
@@ -55,7 +56,8 @@ echo "--- Creating and enabling systemd services ---"
 
 # --- Create services for standard nodes ---
 for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
-    service_name="${node_script%.py}.service"
+    # Extract just the filename (without path and extension) for the service name
+    service_name=$(basename "${node_script%.py}").service
     service_file_path="$SERVICE_FILES_DIR/$service_name"
     venv_python_path="$PROJECT_DIR/$VENV_NAME/bin/python"
     script_path="$PROJECT_DIR/$node_script"
@@ -63,7 +65,7 @@ for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
     echo "Creating service file: $service_file_path"
     tee "$service_file_path" > /dev/null << EOL
 [Unit]
-Description=Kontrol Service for ${node_script}
+Description=Kontrol Service for $(basename "$node_script")
 After=network.target
 
 [Service]
@@ -86,7 +88,8 @@ systemctl daemon-reload
 # --- Enable all created services ---
 ALL_SERVICES=()
 for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
-    ALL_SERVICES+=("${node_script%.py}.service")
+    # Extract just the filename to create the correct service name
+    ALL_SERVICES+=("$(basename "${node_script%.py}").service")
 done
 
 for service_name in "${ALL_SERVICES[@]}"; do

@@ -5,13 +5,13 @@
 VENV_NAME=".venv"
 
 # List of standard nodes from the installer
+# Paths are relative to the project directory (where install.sh is)
 STANDARD_PYTHON_NODES=(
-    "aruco.py"
-    "control.py"
-    "hmi_node.py"
-    "linefollowing_node.py"
-    "llc_interface.py"
-    "orchestrator.py"
+    "nodes/control_node.py"
+    "nodes/hmi_node.py"
+    "nodes/imageprocess_node.py"
+    "nodes/llc_interface.py"
+    "src/orchestrator.py"
 )
 
 # --- Boilerplate ---
@@ -33,7 +33,8 @@ ALL_SERVICES=()
 
 # Generate service names for standard nodes
 for node_script in "${STANDARD_PYTHON_NODES[@]}"; do
-    ALL_SERVICES+=("${node_script%.py}.service")
+    # Extract just the filename to create the correct service name
+    ALL_SERVICES+=("$(basename "${node_script%.py}").service")
 done
 
 echo "The following services will be uninstalled:"
