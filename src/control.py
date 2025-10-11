@@ -9,10 +9,11 @@ from shared_enums import NodeState
 from config_mixin import ConfigMixin
 import steering_command_pb2
 import msgpack # --- DITAMBAHKAN ---
+import json
 
 # --- Konstanta ---
 ARUCO_DATA_TIMEOUT = 2.0
-DISTANCE_THRESHOLD = 1.7
+DISTANCE_THRESHOLD = 3.0
 SPEED_RAMP_RATE = 500
 MAX_BRAKE_FORCE = 252
 BRAKE_LOG_BASE = 10.0
@@ -239,23 +240,46 @@ class ControlNode(ManagedNode, ConfigMixin):
                 self.is_running = False; self.time_stopped = time.time(); self.time_started = None
 
     def _handle_distance_input(self, active_socket):
-        topic_bytes, msg_bytes = active_socket.recv_multipart()
-        msg_string = msg_bytes.decode('utf-8')
         try:
-            payload = ast.literal_eval(msg_string)
-            aruco_data_list = payload.get('data', [])
+            # recv_multipart() returns a list of byte strings. In this case, a list with one element.
+            msg_parts = active_socket.recv_multipart()
+            
+            # 1. Access the first element ([0]) and decode it from bytes to a string.
+            full_message_str = msg_parts[0].decode('utf-8')
+
+            # 2. Split the full string into the topic and the data payload string.
+            topic, data_str = full_message_str.split(' ', 1)
+
+            # 3. The data string uses single quotes, so we use ast.literal_eval, not json.loads.
+            # This safely evaluates the string into a Python dictionary.
+            data = ast.literal_eval(data_str)
+            
+            # 4. Access the list of markers using the correct key: 'data'.
+            aruco_data_list = data.get('data')
+
             if not aruco_data_list:
-                self.aruco_obstacle = False; self.triggering_aruco_id = None
+                self.aruco_obstacle = False
+                self.triggering_aruco_id = None
                 return
+
+            # This logic remains the same and will now work correctly.
             closest_marker = min(aruco_data_list, key=lambda item: item[1])
             trigger_id, min_distance = closest_marker
+            
             self.last_aruco_update_time = time.time()
             if min_distance < DISTANCE_THRESHOLD:
                 if not self.aruco_obstacle:
                     self.logger.warning(f"ARUCO obstacle detected at {min_distance:.2f} m.")
-                self.aruco_obstacle = True; self.triggering_aruco_id = trigger_id
-        except (ValueError, SyntaxError) as e:
-            self.logger.error(f"Failed to parse ArUco data: {msg_string}. Error: {e}")
+                self.aruco_obstacle = True
+                self.triggering_aruco_id = trigger_id
+            else:
+                # Explicitly clear the obstacle if the closest marker is beyond the threshold
+                if self.aruco_obstacle and self.triggering_aruco_id == trigger_id:
+                    self.aruco_obstacle = False
+                    self.triggering_aruco_id = None
+
+        except (ValueError, SyntaxError, IndexError) as e:
+            self.logger.error(f"Failed to parse ArUco data. Message: {msg_parts}. Error: {e}")
 
     # --- DITAMBAHKAN: Fungsi handler baru untuk data LIDAR mentah ---
     def _handle_lidar_raw_input(self, active_socket):

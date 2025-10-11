@@ -71,7 +71,7 @@ zmq:
   lidar_raw_url: "tcp://localhost:5571" # From simple.rs
 
   # URL untuk kedua sumber ArUco (bisa sama jika port-nya sama)
-  distance_forward_url: "tcp://localhost:5555"
+  distance_forward_url: "tcp://192.168.0.103:5555"
   distance_reverse_url: "tcp://localhost:5555"
   
   # Definisikan kedua topik secara terpisah
